@@ -936,7 +936,8 @@ static __devinit int msm_pcm_probe(struct platform_device *pdev)
 	}
 
 	if (of_property_read_bool(pdev->dev.of_node,
-				"qti,msm-pcm-low-latency")){
+				"qti,msm-pcm-low-latency")) {
+
 		pdata->perf_mode = LOW_LATENCY_PCM_MODE;
 		rc = of_property_read_string(pdev->dev.of_node,
 			"qti,latency-level", &latency_level);
