@@ -97,6 +97,9 @@ static int venus_hfi_power_enable(void *dev);
 
 static int venus_hfi_power_enable(void *dev);
 
+static unsigned long venus_hfi_get_clock_rate(struct venus_core_clock *clock,
+		int num_mbs_per_sec);
+
 static void venus_hfi_dump_packet(u8 *packet)
 {
 	u32 c = 0, packet_size = *(u32 *)packet;
@@ -1089,7 +1092,7 @@ fail_clk_enable:
 
 static inline void venus_hfi_clk_disable(struct venus_hfi_device *device)
 {
-	int i;
+	int i, rc = 0;
 	struct venus_core_clock *cl;
 
 	if (!device) {
@@ -1102,6 +1105,14 @@ static inline void venus_hfi_clk_disable(struct venus_hfi_device *device)
 		dprintk(VIDC_DBG, "Clocks already disabled");
 		return;
 	}
+
+	/* We get better power savings if we lower the venus core clock to the
+	 * lowest level before disabling it. */
+	rc = clk_set_rate(device->resources.clock[VCODEC_CLK].clk,
+			venus_hfi_get_clock_rate(
+			&device->resources.clock[VCODEC_CLK], 0));
+	if (rc)
+		dprintk(VIDC_WARN, "Failed to set clock rate to min: %d\n", rc);
 
 	for (i = 0; i <= device->clk_gating_level; i++) {
 		cl = &device->resources.clock[i];
@@ -3091,6 +3102,8 @@ static inline void venus_hfi_disable_clks(struct venus_hfi_device *device)
 	mutex_lock(&device->clk_pwr_lock);
 	if (device->clocks_enabled) {
 		for (i = VCODEC_CLK; i < VCODEC_MAX_CLKS; i++) {
+			if (i == VCODEC_OCMEM_CLK && !device->res->has_ocmem)
+				continue;
 			cl = &device->resources.clock[i];
             usleep(100);
 			clk_disable(cl->clk);
