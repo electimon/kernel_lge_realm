@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -215,6 +215,7 @@ struct msm_fb_data_type {
 	bool shutdown_pending;
 
 	struct task_struct *splash_thread;
+	bool splash_logo_enabled;
 
 	wait_queue_head_t ioctl_q;
 	atomic_t ioctl_ref_cnt;
