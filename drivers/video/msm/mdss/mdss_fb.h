@@ -216,6 +216,9 @@ struct msm_fb_data_type {
 
 	struct task_struct *splash_thread;
 
+	wait_queue_head_t ioctl_q;
+	atomic_t ioctl_ref_cnt;
+
 	struct msm_fb_backup_type msm_fb_backup;
 	struct completion power_set_comp;
 	u32 is_power_setting;
