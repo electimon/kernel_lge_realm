@@ -49,7 +49,7 @@
 #ifdef CONFIG_LGE_PM_RTC_PWROFF_ALARM
 extern static bool poweron_alarm;
 #else
-static bool poweron_alarm;
+bool poweron_alarm;
 #endif
 module_param(poweron_alarm, bool, 0644);
 MODULE_PARM_DESC(poweron_alarm, "Enable/Disable power-on alarm");
