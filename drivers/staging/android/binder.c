@@ -36,9 +36,12 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 #include <linux/security.h>
+#include <linux/limits.h>
 
 #include "binder.h"
 #include "binder_trace.h"
+
+#define SIZE_MAX ((size_t)-1)
 
 static DEFINE_MUTEX(binder_main_lock);
 static DEFINE_MUTEX(binder_deferred_lock);
