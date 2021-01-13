@@ -26,7 +26,14 @@
 
         qcom,mdss_mdp@fd900000 {
                 qcom,mdss-pref-prim-intf = "edp";
+		qcom,panel-lpg-channel = <7>; /* LPG Channel 8 */
+		qcom,panel-pwm-period = <53>;
         };
+
+	qcom,mdss_edp@fd923400 {
+		status = "ok";
+		qcom,cont-splash-enabled;
+	};
 
 	i2c@f9967000 {
 		battery@b {
@@ -214,7 +221,7 @@
 					/* Object 6, Instance = 0 */
 					00 00 00 00 00 00
 					/* Object 38, Instance = 0 */
-					19 03 00 1E 05 0D 00 00 00 00
+					19 04 00 07 08 0D 00 00 00 00
 					00 00 00 00 00 00 00 00 00 00
 					00 00 00 00 00 00 00 00 00 00
 					00 00 00 00 00 00 00 00 00 00
@@ -240,7 +247,7 @@
 					00 00 00 00 00 00 00 00 00
 					/* Object 25, Instance = 0 */
 					00 00 54 6F F0 55 00 00 00 00
-					00 00 00 00 00
+					00 00 00 00 0C
 					/* Object 27, Instance = 0 */
 					00 00 00 00 00 00 00
 					/* Object 40, Instance = 0 */
@@ -397,7 +404,7 @@
 		                1 &intc 0 148 0
 		                2 &msmgpio 144 0x8>;
 			interrupt-names = "core_irq", "async_irq", "wakeup";
-			HSIC_VDDCX-supply = <&pm8841_s2>;
+			hsic_vdd_dig-supply = <&pm8841_s2_corner>;
 			HSIC_GDSC-supply = <&gdsc_usb_hsic>;
 			hsic,strobe-gpio = <&msmgpio 144 0x00>;
 			hsic,data-gpio = <&msmgpio 145 0x00>;
@@ -405,6 +412,7 @@
 			hsic,strobe-pad-offset = <0x2050>;
 			hsic,data-pad-offset = <0x2054>;
 			qcom,phy-susp-sof-workaround;
+			hsic,vdd-voltage-level = <1 5 7>;
 
 			qcom,msm-bus,name = "hsic";
 			qcom,msm-bus,num-cases = <2>;

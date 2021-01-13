@@ -878,6 +878,8 @@ long diagchar_ioctl(struct file *filp,
 	struct diag_log_event_stats le_stats;
 	struct diagpkt_delay_params delay_params;
 	struct real_time_vote_t rt_vote;
+	struct list_head *start, *req_temp;
+	struct dci_pkt_req_entry_t *req_entry = NULL;
 
 	switch (iocmd) {
 	case DIAG_IOCTL_COMMAND_REG:
@@ -993,10 +995,16 @@ long diagchar_ioctl(struct file *filp,
 			}
 			result = i;
 			/* Delete this process from DCI table */
-			for (i = 0; i < dci_max_reg; i++)
-				if (driver->req_tracking_tbl[i].pid ==
-					 current->tgid)
-					driver->req_tracking_tbl[i].pid = 0;
+			list_for_each_safe(start, req_temp,
+							&driver->dci_req_list) {
+				req_entry = list_entry(start,
+						struct dci_pkt_req_entry_t,
+						track);
+				if (req_entry->pid == current->tgid) {
+					list_del(&req_entry->track);
+					kfree(req_entry);
+				}
+			}
 			driver->dci_client_tbl[result].client = NULL;
 			kfree(driver->dci_client_tbl[result].dci_data);
 			driver->dci_client_tbl[result].dci_data = NULL;
@@ -1432,6 +1440,16 @@ static int diagchar_write(struct file *file, const char __user *buf,
 	int err, ret = 0, pkt_type, token_offset = 0;
 	int remote_proc = 0;
 	uint8_t index;
+//                                                                             
+#ifdef CONFIG_LGE_DM_DEV
+	char *buf_dev;
+#endif /*                 */
+//                                                                           
+
+#ifdef CONFIG_LGE_DM_APP
+	char *buf_cmp;
+#endif
+
 #ifdef DIAG_DEBUG
 	int length = 0, i;
 #endif
@@ -1464,6 +1482,26 @@ static int diagchar_write(struct file *file, const char __user *buf,
 		return -EIO;
 	}
 #endif /* DIAG over USB */
+
+#ifdef CONFIG_LGE_DM_APP
+	if (driver->logging_mode == DM_APP_MODE) {
+		/* only diag cmd #250 for supporting testmode tool */
+		buf_cmp = (char *)buf + 4;
+		if (*(buf_cmp) != 0xFA)
+			return 0;
+	}
+#endif
+
+//                                                                             
+#ifdef CONFIG_LGE_DM_DEV
+	if (driver->logging_mode == DM_DEV_MODE) {
+		/* only diag cmd #250 for supporting testmode tool */
+		buf_dev = (char *)buf + 4;
+		if (*(buf_dev) != 0xFA)
+			return 0;
+	}
+#endif
+//                                                                           
 	if (pkt_type == DCI_DATA_TYPE) {
 		user_space_data = diagmem_alloc(driver, payload_size,
 								POOL_TYPE_USER);
@@ -1485,26 +1523,25 @@ static int diagchar_write(struct file *file, const char __user *buf,
 		return err;
 	}
 	if (pkt_type == CALLBACK_DATA_TYPE) {
-		if (payload_size > itemsize) {
+		if (payload_size > driver->itemsize) {
 			pr_err("diag: Dropping packet, packet payload size crosses 4KB limit. Current payload size %d\n",
 				payload_size);
 			driver->dropped_count++;
 			return -EBADMSG;
 		}
 
-		mutex_lock(&driver->diagchar_mutex);
 		buf_copy = diagmem_alloc(driver, payload_size, POOL_TYPE_COPY);
 		if (!buf_copy) {
 			driver->dropped_count++;
-			mutex_unlock(&driver->diagchar_mutex);
 			return -ENOMEM;
 		}
 
 		err = copy_from_user(buf_copy, buf + 4, payload_size);
 		if (err) {
 			pr_err("diag: copy failed for user space data\n");
-			ret = -EIO;
-			goto fail_free_copy;
+			diagmem_free(driver, buf_copy, POOL_TYPE_COPY);
+			buf_copy = NULL;
+			return -EIO;
 		}
 		/* Check for proc_type */
 		remote_proc = diag_get_remote(*(int *)buf_copy);
@@ -1513,7 +1550,9 @@ static int diagchar_write(struct file *file, const char __user *buf,
 			wait_event_interruptible(driver->wait_q,
 				 (driver->in_busy_pktdata == 0));
 			ret = diag_process_apps_pkt(buf_copy, payload_size);
-			goto fail_free_copy;
+			diagmem_free(driver, buf_copy, POOL_TYPE_COPY);
+			buf_copy = NULL;
+			return ret;
 		}
 		/* The packet is for the remote processor */
 		token_offset = 4;
@@ -1526,7 +1565,7 @@ static int diagchar_write(struct file *file, const char __user *buf,
 							1 + payload_size);
 		send.terminate = 1;
 
-
+		mutex_lock(&driver->diagchar_mutex);
 		if (!buf_hdlc)
 			buf_hdlc = diagmem_alloc(driver, HDLC_OUT_BUF_SIZE,
 							POOL_TYPE_HDLC);
@@ -1608,22 +1647,15 @@ static int diagchar_write(struct file *file, const char __user *buf,
 		goto fail_free_hdlc;
 	}
 	if (pkt_type == USER_SPACE_DATA_TYPE) {
-		user_space_data = diagmem_alloc(driver, payload_size,
-								POOL_TYPE_USER);
-		if (!user_space_data) {
-			driver->dropped_count++;
-			return -ENOMEM;
-		}
-		err = copy_from_user(user_space_data, buf + 4,
+		err = copy_from_user(driver->user_space_data_buf, buf + 4,
 							 payload_size);
 		if (err) {
 			pr_err("diag: copy failed for user space data\n");
-			diagmem_free(driver, user_space_data, POOL_TYPE_USER);
-			user_space_data = NULL;
 			return -EIO;
 		}
 		/* Check for proc_type */
-		remote_proc = diag_get_remote(*(int *)user_space_data);
+		remote_proc =
+			diag_get_remote(*(int *)driver->user_space_data_buf);
 
 		if (remote_proc) {
 			token_offset = 4;
@@ -1633,12 +1665,9 @@ static int diagchar_write(struct file *file, const char __user *buf,
 
 		/* Check masks for On-Device logging */
 		if (driver->mask_check) {
-			if (!mask_request_validate(user_space_data +
+			if (!mask_request_validate(driver->user_space_data_buf +
 							 token_offset)) {
 				pr_alert("diag: mask request Invalid\n");
-				diagmem_free(driver, user_space_data,
-							POOL_TYPE_USER);
-				user_space_data = NULL;
 				return -EFAULT;
 			}
 		}
@@ -1646,7 +1675,7 @@ static int diagchar_write(struct file *file, const char __user *buf,
 #ifdef DIAG_DEBUG
 		pr_debug("diag: user space data %d\n", payload_size);
 		for (i = 0; i < payload_size; i++)
-			pr_debug("\t %x", *((user_space_data
+			pr_debug("\t %x", *((driver->user_space_data_buf
 						+ token_offset)+i));
 #endif
 #ifdef CONFIG_DIAG_SDIO_PIPE
@@ -1657,7 +1686,7 @@ static int diagchar_write(struct file *file, const char __user *buf,
 					 payload_size));
 			if (driver->sdio_ch && (payload_size > 0)) {
 				sdio_write(driver->sdio_ch, (void *)
-				   (user_space_data + token_offset),
+				   (driver->user_space_data_buf + token_offset),
 				   payload_size);
 			}
 		}
@@ -1688,8 +1717,8 @@ static int diagchar_write(struct file *file, const char __user *buf,
 				diag_hsic[index].in_busy_hsic_read_on_device =
 									0;
 				err = diag_bridge_write(index,
-						user_space_data + token_offset,
-						payload_size);
+						driver->user_space_data_buf +
+						token_offset, payload_size);
 				if (err) {
 					pr_err("diag: err sending mask to MDM: %d\n",
 					       err);
@@ -1710,14 +1739,12 @@ static int diagchar_write(struct file *file, const char __user *buf,
 						&& driver->lcid) {
 			if (payload_size > 0) {
 				err = msm_smux_write(driver->lcid, NULL,
-					user_space_data + token_offset,
+					driver->user_space_data_buf +
+						token_offset,
 					payload_size);
 				if (err) {
 					pr_err("diag:send mask to MDM err %d",
 							err);
-					diagmem_free(driver, user_space_data,
-								POOL_TYPE_USER);
-					user_space_data = NULL;
 					return err;
 				}
 			}
@@ -1726,9 +1753,8 @@ static int diagchar_write(struct file *file, const char __user *buf,
 		/* send masks to 8k now */
 		if (!remote_proc)
 			diag_process_hdlc((void *)
-				(user_space_data + token_offset), payload_size);
-		diagmem_free(driver, user_space_data, POOL_TYPE_USER);
-		user_space_data = NULL;
+				(driver->user_space_data_buf + token_offset),
+					payload_size);
 		return 0;
 	}
 
@@ -2056,6 +2082,67 @@ void diagfwd_bridge_fn(int type)
 inline void diagfwd_bridge_fn(int type) { }
 #endif
 
+#ifdef CONFIG_LGE_DIAG_ENABLE_SPR
+int user_diag_enable = 0;
+
+static ssize_t read_diag_enable(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int ret;
+	ret = sprintf(buf, "%d", user_diag_enable);
+	pr_info("%s: diag_enable=%d ret=%d\n", __func__, user_diag_enable,ret);
+	return ret;
+}
+
+static ssize_t write_diag_enable(struct device *dev,
+        struct device_attribute *attr,
+        const char *buf, size_t size)
+{
+    pr_info("%s: diag_enable=%s size=%d\n", __func__, buf,size);
+    sscanf(buf, "%d", &user_diag_enable);
+    return size;
+}
+
+static DEVICE_ATTR(diag_enable, S_IRUGO | S_IWUSR, read_diag_enable, write_diag_enable);
+
+int lge_diag_create_file(struct platform_device *pdev)
+{
+    int ret;
+
+    ret = device_create_file(&pdev->dev, &dev_attr_diag_enable);
+    if (ret) {
+        device_remove_file(&pdev->dev, &dev_attr_diag_enable);
+        return ret;
+    }
+    return ret;
+}
+
+int lge_diag_remove_file(struct platform_device *pdev)
+{
+    device_remove_file(&pdev->dev, &dev_attr_diag_enable);
+    return 0;
+}
+
+static int lge_diag_cmd_probe(struct platform_device *pdev)
+{
+    return lge_diag_create_file(pdev);
+}
+
+static int lge_diag_cmd_remove(struct platform_device *pdev)
+{
+    lge_diag_remove_file(pdev);
+    return 0;
+}
+
+static struct platform_driver lge_diag_cmd_driver = {
+    .probe		= lge_diag_cmd_probe,
+    .remove 	= lge_diag_cmd_remove,
+    .driver 	= {
+        .name = "lg_diag_cmd",
+        .owner	= THIS_MODULE,
+    },
+};
+#endif
+
 static int __init diagchar_init(void)
 {
 	dev_t dev;
@@ -2144,6 +2231,10 @@ static int __init diagchar_init(void)
 		printk(KERN_INFO "kzalloc failed\n");
 		goto fail;
 	}
+
+#ifdef CONFIG_LGE_DIAG_ENABLE_SPR
+	platform_driver_register(&lge_diag_cmd_driver);
+#endif
 
 	pr_info("diagchar initialized now");
 	return 0;

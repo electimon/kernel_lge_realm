@@ -42,6 +42,11 @@
 
 #include "sdhci-pltfm.h"
 
+/// SD_CARD_DET polarity change.
+#if defined(CONFIG_MACH_MSM8226_W7_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_G2MDS_OPEN_CIS) || defined(CONFIG_MACH_MSM8226_G2MDS_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_G2MSS_GLOBAL_COM)
+#include <mach/board_lge.h>
+#endif /* CONFIG_MACH_MSM8226_W7_OPEN_CIS || CONFIG_MACH_MSM8226_W7_OPEN_EU || CONFIG_MACH_MSM8226_W7_GLOBAL_COM || CONFIG_MACH_MSM8226_W7_GLOBAL_SCA */
+
 #define SDHCI_VER_100		0x2B
 #define CORE_HC_MODE		0x78
 #define HC_MODE_EN		0x1
@@ -317,6 +322,7 @@ struct sdhci_msm_host {
 	bool tuning_done;
 	bool calibration_done;
 	u8 saved_tuning_phase;
+	atomic_t controller_clock;
 };
 
 enum vdd_io_level {
@@ -1341,6 +1347,11 @@ static struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev)
 	int clk_table_len;
 	u32 *clk_table = NULL;
 	enum of_gpio_flags flags = OF_GPIO_ACTIVE_LOW;
+/// SD_CARD_DET polarity change.
+#if defined(CONFIG_MACH_MSM8226_W7_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_SCA)
+	hw_rev_type hw_rev;
+	hw_rev = lge_get_board_revno();
+#endif /* CONFIG_MACH_MSM8226_W7_OPEN_CIS || CONFIG_MACH_MSM8226_W7_OPEN_EU || CONFIG_MACH_MSM8226_W7_GLOBAL_COM || CONFIG_MACH_MSM8226_W7_GLOBAL_SCA */
 
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata) {
@@ -1349,6 +1360,15 @@ static struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev)
 	}
 
 	pdata->status_gpio = of_get_named_gpio_flags(np, "cd-gpios", 0, &flags);
+
+/// SD_CARD_DET polarity change.
+#if defined(CONFIG_MACH_MSM8226_W7_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_SCA)
+	if( hw_rev <= HW_REV_A )
+		flags = OF_GPIO_ACTIVE_LOW;
+	else
+		flags = 0x0;
+#endif /* CONFIG_MACH_MSM8226_W7_OPEN_CIS || CONFIG_MACH_MSM8226_W7_OPEN_EU || CONFIG_MACH_MSM8226_W7_GLOBAL_COM || CONFIG_MACH_MSM8226_W7_GLOBAL_SCA */
+
 	if (gpio_is_valid(pdata->status_gpio) & !(flags & OF_GPIO_ACTIVE_LOW))
 		pdata->caps2 |= MMC_CAP2_CD_ACTIVE_HIGH;
 
@@ -2213,6 +2233,50 @@ static unsigned int sdhci_msm_get_sup_clk_rate(struct sdhci_host *host,
 	return sel_clk;
 }
 
+static int sdhci_msm_enable_controller_clock(struct sdhci_host *host)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+	int rc = 0;
+
+	if (atomic_read(&msm_host->controller_clock))
+		return 0;
+
+	sdhci_msm_bus_voting(host, 1);
+
+	if (!IS_ERR(msm_host->pclk)) {
+		rc = clk_prepare_enable(msm_host->pclk);
+		if (rc) {
+			pr_err("%s: %s: failed to enable the pclk with error %d\n",
+			       mmc_hostname(host->mmc), __func__, rc);
+			goto remove_vote;
+		}
+	}
+
+	rc = clk_prepare_enable(msm_host->clk);
+	if (rc) {
+		pr_err("%s: %s: failed to enable the host-clk with error %d\n",
+		       mmc_hostname(host->mmc), __func__, rc);
+		goto disable_pclk;
+	}
+
+	atomic_set(&msm_host->controller_clock, 1);
+	pr_debug("%s: %s: enabled controller clock\n",
+			mmc_hostname(host->mmc), __func__);
+	goto out;
+
+disable_pclk:
+	if (!IS_ERR(msm_host->pclk))
+		clk_disable_unprepare(msm_host->pclk);
+remove_vote:
+	if (msm_host->msm_bus_vote.client_handle)
+		sdhci_msm_bus_cancel_work_and_set_vote(host, 0);
+out:
+	return rc;
+}
+
+
+
 static int sdhci_msm_prepare_clocks(struct sdhci_host *host, bool enable)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -2223,36 +2287,32 @@ static int sdhci_msm_prepare_clocks(struct sdhci_host *host, bool enable)
 		pr_debug("%s: request to enable clocks\n",
 				mmc_hostname(host->mmc));
 
-		sdhci_msm_bus_voting(host, 1);
+		/*
+		 * The bus-width or the clock rate might have changed
+		 * after controller clocks are enbaled, update bus vote
+		 * in such case.
+		 */
+		if (atomic_read(&msm_host->controller_clock))
+			sdhci_msm_bus_voting(host, 1);
+
+		rc = sdhci_msm_enable_controller_clock(host);
+		if (rc)
+			goto remove_vote;
 
 		if (!IS_ERR_OR_NULL(msm_host->bus_clk)) {
 			rc = clk_prepare_enable(msm_host->bus_clk);
 			if (rc) {
 				pr_err("%s: %s: failed to enable the bus-clock with error %d\n",
 					mmc_hostname(host->mmc), __func__, rc);
-				goto remove_vote;
+				goto disable_controller_clk;
 			}
-		}
-		if (!IS_ERR(msm_host->pclk)) {
-			rc = clk_prepare_enable(msm_host->pclk);
-			if (rc) {
-				pr_err("%s: %s: failed to enable the pclk with error %d\n",
-					mmc_hostname(host->mmc), __func__, rc);
-				goto disable_bus_clk;
-			}
-		}
-		rc = clk_prepare_enable(msm_host->clk);
-		if (rc) {
-			pr_err("%s: %s: failed to enable the host-clk with error %d\n",
-				mmc_hostname(host->mmc), __func__, rc);
-			goto disable_pclk;
 		}
 		if (!IS_ERR(msm_host->ff_clk)) {
 			rc = clk_prepare_enable(msm_host->ff_clk);
 			if (rc) {
 				pr_err("%s: %s: failed to enable the ff_clk with error %d\n",
 					mmc_hostname(host->mmc), __func__, rc);
-				goto disable_clk;
+				goto disable_bus_clk;
 			}
 		}
 		if (!IS_ERR(msm_host->sleep_clk)) {
@@ -2280,6 +2340,7 @@ static int sdhci_msm_prepare_clocks(struct sdhci_host *host, bool enable)
 		if (!IS_ERR_OR_NULL(msm_host->bus_clk))
 			clk_disable_unprepare(msm_host->bus_clk);
 
+		atomic_set(&msm_host->controller_clock, 0);
 		sdhci_msm_bus_voting(host, 0);
 	}
 	atomic_set(&msm_host->clks_on, enable);
@@ -2287,15 +2348,15 @@ static int sdhci_msm_prepare_clocks(struct sdhci_host *host, bool enable)
 disable_ff_clk:
 	if (!IS_ERR_OR_NULL(msm_host->ff_clk))
 		clk_disable_unprepare(msm_host->ff_clk);
-disable_clk:
-	if (!IS_ERR_OR_NULL(msm_host->clk))
-		clk_disable_unprepare(msm_host->clk);
-disable_pclk:
-	if (!IS_ERR_OR_NULL(msm_host->pclk))
-		clk_disable_unprepare(msm_host->pclk);
 disable_bus_clk:
 	if (!IS_ERR_OR_NULL(msm_host->bus_clk))
 		clk_disable_unprepare(msm_host->bus_clk);
+disable_controller_clk:
+	if (!IS_ERR_OR_NULL(msm_host->clk))
+		clk_disable_unprepare(msm_host->clk);
+	if (!IS_ERR_OR_NULL(msm_host->pclk))
+		clk_disable_unprepare(msm_host->pclk);
+	atomic_set(&msm_host->controller_clock, 0);
 remove_vote:
 	if (msm_host->msm_bus_vote.client_handle)
 		sdhci_msm_bus_cancel_work_and_set_vote(host, 0);
@@ -2310,6 +2371,7 @@ static void sdhci_msm_set_clock(struct sdhci_host *host, unsigned int clock)
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
 	struct mmc_ios	curr_ios = host->mmc->ios;
 	u32 sup_clock, ddr_clock;
+	bool curr_pwrsave;
 
 	if (!clock) {
 		sdhci_msm_prepare_clocks(host, false);
@@ -2320,6 +2382,22 @@ static void sdhci_msm_set_clock(struct sdhci_host *host, unsigned int clock)
 	rc = sdhci_msm_prepare_clocks(host, true);
 	if (rc)
 		return;
+
+	curr_pwrsave = !!(readl_relaxed(host->ioaddr + CORE_VENDOR_SPEC) &
+			  CORE_CLK_PWRSAVE);
+	if ((clock > 400000) &&
+	    !curr_pwrsave && mmc_host_may_gate_card(host->mmc->card))
+		writel_relaxed(readl_relaxed(host->ioaddr + CORE_VENDOR_SPEC)
+				| CORE_CLK_PWRSAVE,
+				host->ioaddr + CORE_VENDOR_SPEC);
+	/*
+	 * Disable pwrsave for a newly added card if doesn't allow clock
+	 * gating.
+	 */
+	else if (curr_pwrsave && !mmc_host_may_gate_card(host->mmc->card))
+		writel_relaxed(readl_relaxed(host->ioaddr + CORE_VENDOR_SPEC)
+				& ~CORE_CLK_PWRSAVE,
+				host->ioaddr + CORE_VENDOR_SPEC);
 
 	sup_clock = sdhci_msm_get_sup_clk_rate(host, clock);
 	if ((curr_ios.timing == MMC_TIMING_UHS_DDR50) ||
@@ -2541,8 +2619,12 @@ static struct sdhci_ops sdhci_msm_ops = {
 	.get_min_clock = sdhci_msm_get_min_clock,
 	.get_max_clock = sdhci_msm_get_max_clock,
 	.disable_data_xfer = sdhci_msm_disable_data_xfer,
+	.enable_controller_clock = sdhci_msm_enable_controller_clock,
 };
 
+#ifdef CONFIG_LGE_ENABLE_MMC_STRENGTH_CONTROL
+	struct sdhci_msm_host *mmc_control_mmchost = NULL;
+#endif
 static int __devinit sdhci_msm_probe(struct platform_device *pdev)
 {
 	struct sdhci_host *host;
@@ -2620,6 +2702,7 @@ static int __devinit sdhci_msm_probe(struct platform_device *pdev)
 		if (ret)
 			goto bus_clk_disable;
 	}
+	atomic_set(&msm_host->controller_clock, 1);
 
 	/* Setup SDC MMC clock */
 	msm_host->clk = devm_clk_get(&pdev->dev, "core_clk");
@@ -2686,6 +2769,9 @@ static int __devinit sdhci_msm_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto vreg_deinit;
 	}
+
+	/* Unset HC_MODE_EN bit in HC_MODE register */
+	writel_relaxed(0, (msm_host->core_mem + CORE_HC_MODE));
 
 	/* Set SW_RST bit in POWER register (Offset 0x0) */
 	writel_relaxed(readl_relaxed(msm_host->core_mem + CORE_POWER) |
@@ -2820,6 +2906,7 @@ static int __devinit sdhci_msm_probe(struct platform_device *pdev)
 	msm_host->mmc->caps2 |= MMC_CAP2_CLK_SCALE;
 	msm_host->mmc->caps2 |= MMC_CAP2_STOP_REQUEST;
 	msm_host->mmc->caps2 |= MMC_CAP2_ASYNC_SDIO_IRQ_4BIT_MODE;
+	msm_host->mmc->caps2 |= MMC_CAP2_CORE_PM;
 	msm_host->mmc->pm_caps |= MMC_PM_KEEP_POWER;
 
 	if (msm_host->pdata->nonremovable)
@@ -2829,6 +2916,10 @@ static int __devinit sdhci_msm_probe(struct platform_device *pdev)
 
 	init_completion(&msm_host->pwr_irq_completion);
 
+#ifdef CONFIG_LGE_ENABLE_MMC_STRENGTH_CONTROL
+	if(msm_host->mmc->index == 1)
+		mmc_control_mmchost = msm_host ;
+#endif
 	if (gpio_is_valid(msm_host->pdata->status_gpio)) {
 		ret = mmc_cd_gpio_request(msm_host->mmc,
 				msm_host->pdata->status_gpio);
@@ -2838,6 +2929,10 @@ static int __devinit sdhci_msm_probe(struct platform_device *pdev)
 			goto vreg_deinit;
 		}
 	}
+
+    #ifdef CONFIG_MACH_LGE
+	irq_set_irq_wake(host->mmc->hotplug.irq, 1);
+    #endif
 
 	if (dma_supported(mmc_dev(host->mmc), DMA_BIT_MASK(32))) {
 		host->dma_mask = DMA_BIT_MASK(32);
@@ -2876,7 +2971,7 @@ static int __devinit sdhci_msm_probe(struct platform_device *pdev)
 	if (ret)
 		pr_err("%s: %s: pm_runtime_set_active failed: err: %d\n",
 		       mmc_hostname(host->mmc), __func__, ret);
-	else
+	else if (mmc_use_core_runtime_pm(host->mmc))
 		pm_runtime_enable(&pdev->dev);
 
 	/* Successful initialization */
@@ -2989,12 +3084,18 @@ static int sdhci_msm_runtime_resume(struct device *dev)
 static int sdhci_msm_suspend(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
+
+    #ifndef CONFIG_MACH_LGE
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+    #endif
+
 	int ret = 0;
 
+    #ifndef CONFIG_MACH_LGE
 	if (gpio_is_valid(msm_host->pdata->status_gpio))
 		mmc_cd_gpio_free(msm_host->mmc);
+    #endif
 
 	if (pm_runtime_suspended(dev)) {
 		pr_debug("%s: %s: already runtime suspended\n",
@@ -3010,10 +3111,15 @@ out:
 static int sdhci_msm_resume(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
+
+    #ifndef CONFIG_MACH_LGE
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+    #endif
+
 	int ret = 0;
 
+    #ifndef CONFIG_MACH_LGE
 	if (gpio_is_valid(msm_host->pdata->status_gpio)) {
 		ret = mmc_cd_gpio_request(msm_host->mmc,
 				msm_host->pdata->status_gpio);
@@ -3021,6 +3127,7 @@ static int sdhci_msm_resume(struct device *dev)
 			pr_err("%s: %s: Failed to request card detection IRQ %d\n",
 					mmc_hostname(host->mmc), __func__, ret);
 	}
+    #endif
 
 	if (pm_runtime_suspended(dev)) {
 		pr_debug("%s: %s: runtime suspended, defer system resume\n",
@@ -3048,6 +3155,7 @@ static const struct dev_pm_ops sdhci_msm_pmops = {
 #endif
 static const struct of_device_id sdhci_msm_dt_match[] = {
 	{.compatible = "qcom,sdhci-msm"},
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, sdhci_msm_dt_match);
 

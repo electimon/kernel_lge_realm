@@ -342,7 +342,7 @@ static void dump_hsic_regs(struct usb_hcd *hcd)
 
 #define HSIC_DBG1_REG		0x38
 
-static const int vdd_val[VDD_TYPE_MAX][VDD_VAL_MAX] = {
+static int vdd_val[VDD_TYPE_MAX][VDD_VAL_MAX] = {
 		{   /* VDD_CX CORNER Voting */
 			[VDD_NONE]	= RPM_VREG_CORNER_NONE,
 			[VDD_MIN]	= RPM_VREG_CORNER_NOMINAL,
@@ -359,6 +359,8 @@ static int msm_hsic_init_vddcx(struct msm_hsic_hcd *mehci, int init)
 {
 	int ret = 0;
 	int none_vol, min_vol, max_vol;
+	u32 tmp[3];
+	int len = 0;
 
 	if (!mehci->hsic_vddcx) {
 		mehci->vdd_type = VDDCX_CORNER;
@@ -372,6 +374,22 @@ static int msm_hsic_init_vddcx(struct msm_hsic_hcd *mehci, int init)
 				return PTR_ERR(mehci->hsic_vddcx);
 			}
 			mehci->vdd_type = VDDCX;
+		}
+
+		if (mehci->dev->of_node) {
+			of_get_property(mehci->dev->of_node,
+					"hsic,vdd-voltage-level",
+					&len);
+			if (len == sizeof(tmp)) {
+				of_property_read_u32_array(mehci->dev->of_node,
+						"hsic,vdd-voltage-level",
+						tmp, len/sizeof(*tmp));
+				vdd_val[mehci->vdd_type][VDD_NONE] = tmp[0];
+				vdd_val[mehci->vdd_type][VDD_MIN] = tmp[1];
+				vdd_val[mehci->vdd_type][VDD_MAX] = tmp[2];
+			} else {
+				dev_dbg(mehci->dev, "Use default vdd config\n");
+			}
 		}
 	}
 
@@ -1929,7 +1947,6 @@ static int __devinit ehci_hsic_msm_probe(struct platform_device *pdev)
 	if (pdev->dev.of_node) {
 		dev_dbg(&pdev->dev, "device tree enabled\n");
 		pdev->dev.platform_data = msm_hsic_dt_to_pdata(pdev);
-		dev_set_name(&pdev->dev, ehci_msm_hsic_driver.driver.name);
 	} else {
 		/* explicitly pass wakeup_irq flag for !DT */
 		wakeup_irq_flags = IRQF_TRIGGER_HIGH;

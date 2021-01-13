@@ -38,7 +38,7 @@ enum ion_heap_type {
 	ION_HEAP_TYPE_CHUNK,
 	ION_HEAP_TYPE_CUSTOM, /* must be last so device specific heaps always
 				 are at the end of this enum */
-	ION_NUM_HEAPS,
+	ION_NUM_HEAPS = 16,
 };
 
 #define ION_HEAP_SYSTEM_MASK		(1 << ION_HEAP_TYPE_SYSTEM)
@@ -58,6 +58,14 @@ enum ion_heap_type {
 #define ION_FLAG_CACHED_NEEDS_SYNC 2	/* mappings of this buffer will created
 					   at mmap time, if this is set
 					   caches must be managed manually */
+#define ION_FLAG_FREED_FROM_SHRINKER 4	/* Skip any possible
+					   heap-specific caching
+					   mechanism (e.g. page
+					   pools). Guarantees that any
+					   buffer storage that came
+					   from the system allocator
+					   will be returned to the
+					   system allocator. */
 
 #ifdef __KERNEL__
 #include <linux/err.h>

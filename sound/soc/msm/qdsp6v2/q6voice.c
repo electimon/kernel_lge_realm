@@ -28,8 +28,9 @@
 #include "audio_acdb.h"
 #include "q6voice.h"
 
-
-#define TIMEOUT_MS 200
+//                                                                     
+#define TIMEOUT_MS 500
+//            
 
 
 #define CMD_STATUS_SUCCESS 0
@@ -96,6 +97,32 @@ static int voice_alloc_and_map_cal_mem(struct voice_data *v);
 static int voice_alloc_and_map_oob_mem(struct voice_data *v);
 
 static struct voice_data *voice_get_session_by_idx(int idx);
+
+
+//                                      
+static uint32_t audio_start = 0;
+//static String audio_start = "/sys/module/q6voice/parameters/audio_start";
+static int set_start_call(const char *buf, struct kernel_param *kp)
+{
+        audio_start = buf[0] - '0';
+		pr_info("%s: LG audio bsp: set  %d \n", __func__, audio_start);
+        return 1;
+}
+
+
+
+static int get_start_call(char *buf, struct kernel_param *kp)
+{
+	    int ret = 0;
+		
+		ret = sprintf(buf, "%d\n", audio_start);
+		pr_info("%s:LG audio bsp: get  %d \n", __func__, audio_start);
+	    return ret;
+}
+module_param_call(audio_start,set_start_call, get_start_call, NULL, 0664);
+//                                    
+
+
 
 static void voice_itr_init(struct voice_session_itr *itr,
 			   u32 session_id)
@@ -348,6 +375,11 @@ static struct voice_data *voice_get_session_by_idx(int idx)
 {
 	return ((idx < 0 || idx >= MAX_VOC_SESSIONS) ?
 				NULL : &common.voice[idx]);
+}
+
+static bool is_voice_session(u32 session_id)
+{
+	return (session_id == common.voice[VOC_PATH_PASSIVE].session_id);
 }
 
 static bool is_voip_session(u32 session_id)
@@ -1861,10 +1893,18 @@ static int voice_send_set_device_cmd(struct voice_data *v)
 
 	cvp_setdev_cmd.cvp_set_device_v2.tx_port_id = v->dev_tx.port_id;
 	cvp_setdev_cmd.cvp_set_device_v2.rx_port_id = v->dev_rx.port_id;
-	cvp_setdev_cmd.cvp_set_device_v2.vocproc_mode =
+
+	if (common.ec_ref_ext) {
+		cvp_setdev_cmd.cvp_set_device_v2.vocproc_mode =
+				VSS_IVOCPROC_VOCPROC_MODE_EC_EXT_MIXING;
+		cvp_setdev_cmd.cvp_set_device_v2.ec_ref_port_id =
+				common.ec_port_id;
+	} else {
+		cvp_setdev_cmd.cvp_set_device_v2.vocproc_mode =
 				    VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING;
-	cvp_setdev_cmd.cvp_set_device_v2.ec_ref_port_id =
+		cvp_setdev_cmd.cvp_set_device_v2.ec_ref_port_id =
 				    VSS_IVOCPROC_PORT_ID_NONE;
+	}
 	pr_debug("topology=%d , tx_port_id=%d, rx_port_id=%d\n",
 		cvp_setdev_cmd.cvp_set_device_v2.tx_topology_id,
 		cvp_setdev_cmd.cvp_set_device_v2.tx_port_id,
@@ -1958,20 +1998,22 @@ static int voice_send_cvs_register_cal_cmd(struct voice_data *v)
 	if (!common.apr_q6_cvs) {
 		pr_err("%s: apr_cvs is NULL\n", __func__);
 
-		ret = -EPERM;
+		ret = -EINVAL;
 		goto done;
 	}
 
 	if (!common.cal_mem_handle) {
 		pr_err("%s: Cal mem handle is NULL\n", __func__);
-		ret = -EPERM;
+
+		ret = -EINVAL;
 		goto done;
 	}
 
 	get_vocstrm_cal(&cal_block);
 	if (cal_block.cal_size == 0) {
 		pr_err("%s: CVS cal size is 0\n", __func__);
-		ret = -EPERM;
+
+		ret = -EINVAL;
 		goto done;
 	}
 
@@ -1992,6 +2034,15 @@ static int voice_send_cvs_register_cal_cmd(struct voice_data *v)
 
 	/* Get the column info corresponding to CVS cal from ACDB. */
 	get_voice_col_data(VOCSTRM_CAL, &cal_block);
+	if (cal_block.cal_size == 0 ||
+	    cal_block.cal_size >
+	    sizeof(cvs_reg_cal_cmd.cvs_cal_data.column_info)) {
+		pr_err("%s: Invalid VOCSTRM_CAL size %d\n",
+		       __func__, cal_block.cal_size);
+
+		ret = -EINVAL;
+		goto done;
+	}
 	memcpy(&cvs_reg_cal_cmd.cvs_cal_data.column_info[0],
 	       (void *) cal_block.cal_kvaddr,
 	       cal_block.cal_size);
@@ -2238,20 +2289,22 @@ static int voice_send_cvp_register_cal_cmd(struct voice_data *v)
 	if (!common.apr_q6_cvp) {
 		pr_err("%s: apr_cvp is NULL\n", __func__);
 
-		ret = -EPERM;
+		ret = -EINVAL;
 		goto done;
 	}
 
 	if (!common.cal_mem_handle) {
 		pr_err("%s: Cal mem handle is NULL\n", __func__);
-		ret = -EPERM;
+
+		ret = -EINVAL;
 		goto done;
 	}
 
 	get_vocproc_cal(&cal_block);
 	if (cal_block.cal_size == 0) {
 		pr_err("%s: CVP cal size is 0\n", __func__);
-		ret = -EPERM;
+
+		ret = -EINVAL;
 		goto done;
 	}
 
@@ -2272,6 +2325,16 @@ static int voice_send_cvp_register_cal_cmd(struct voice_data *v)
 
 	/* Get the column info corresponding to CVP cal from ACDB. */
 	get_voice_col_data(VOCPROC_CAL, &cal_block);
+	if (cal_block.cal_size == 0 ||
+	    cal_block.cal_size >
+	    sizeof(cvp_reg_cal_cmd.cvp_cal_data.column_info)) {
+		pr_err("%s: Invalid VOCPROC_CAL size %d\n",
+		       __func__, cal_block.cal_size);
+
+		ret = -EINVAL;
+		goto done;
+	}
+
 	memcpy(&cvp_reg_cal_cmd.cvp_cal_data.column_info[0],
 	       (void *) cal_block.cal_kvaddr,
 	       cal_block.cal_size);
@@ -2378,20 +2441,22 @@ static int voice_send_cvp_register_vol_cal_cmd(struct voice_data *v)
 	if (!common.apr_q6_cvp) {
 		pr_err("%s: apr_cvp is NULL\n", __func__);
 
-		ret = -EPERM;
+		ret = -EINVAL;
 		goto done;
 	}
 
 	if (!common.cal_mem_handle) {
 		pr_err("%s: Cal mem handle is NULL\n", __func__);
-		ret = -EPERM;
+
+		ret = -EINVAL;
 		goto done;
 	}
 
 	get_vocvol_cal(&cal_block);
 	if (cal_block.cal_size == 0) {
 		pr_err("%s: CVP vol cal size is 0\n", __func__);
-		ret = -EPERM;
+
+		ret = -EINVAL;
 		goto done;
 	}
 
@@ -2414,6 +2479,16 @@ static int voice_send_cvp_register_vol_cal_cmd(struct voice_data *v)
 
 	/* Get the column info corresponding to CVP volume cal from ACDB. */
 	get_voice_col_data(VOCVOL_CAL, &cal_block);
+	if (cal_block.cal_size == 0 ||
+	    cal_block.cal_size >
+	    sizeof(cvp_reg_vol_cal_cmd.cvp_vol_cal_data.column_info)) {
+		pr_err("%s: Invalid VOCVOL_CAL size %d\n",
+		       __func__, cal_block.cal_size);
+
+		ret = -EINVAL;
+		goto done;
+	}
+
 	memcpy(&cvp_reg_vol_cal_cmd.cvp_vol_cal_data.column_info[0],
 	       (void *) cal_block.cal_kvaddr,
 	       cal_block.cal_size);
@@ -2991,10 +3066,17 @@ static int voice_setup_vocproc(struct voice_data *v)
 	cvp_session_cmd.cvp_session.rx_port_id = v->dev_rx.port_id;
 	cvp_session_cmd.cvp_session.profile_id =
 					 VSS_ICOMMON_CAL_NETWORK_ID_NONE;
-	cvp_session_cmd.cvp_session.vocproc_mode =
+	if (common.ec_ref_ext) {
+		cvp_session_cmd.cvp_session.vocproc_mode =
+				VSS_IVOCPROC_VOCPROC_MODE_EC_EXT_MIXING;
+		cvp_session_cmd.cvp_session.ec_ref_port_id =
+					common.ec_port_id;
+	} else {
+		cvp_session_cmd.cvp_session.vocproc_mode =
 				 VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING;
-	cvp_session_cmd.cvp_session.ec_ref_port_id =
+		cvp_session_cmd.cvp_session.ec_ref_port_id =
 						 VSS_IVOCPROC_PORT_ID_NONE;
+	}
 
 	pr_debug("tx_topology: %d tx_port_id=%d, rx_port_id=%d, mode: 0x%x\n",
 		cvp_session_cmd.cvp_session.tx_topology_id,
@@ -4222,8 +4304,10 @@ int voc_start_playback(uint32_t set, uint16_t port_id)
 		v = voice_get_session(voc_get_session_id(VOICE_SESSION_NAME));
 	else if (port_id == VOICE2_PLAYBACK_TX)
 		v = voice_get_session(voc_get_session_id(VOICE2_SESSION_NAME));
+	else
+		pr_err("%s: Invalid port_id 0x%x", __func__, port_id);
 
-	if (v != NULL) {
+	while (v != NULL) {
 		mutex_lock(&v->lock);
 		v->music_info.port_id = port_id;
 		v->music_info.play_enable = set;
@@ -4243,8 +4327,17 @@ int voc_start_playback(uint32_t set, uint16_t port_id)
 		}
 
 		mutex_unlock(&v->lock);
-	} else {
-		pr_err("%s: Invalid port_id 0x%x", __func__, port_id);
+
+		/* Voice and VoLTE call use the same pseudo port and hence
+		 * use the same mixer control. So enable incall delivery
+		 * for VoLTE as well with Voice.
+		 */
+		if (is_voice_session(v->session_id)) {
+			v = voice_get_session(voc_get_session_id(
+							VOLTE_SESSION_NAME));
+		} else {
+			break;
+		}
 	}
 
 	return ret;
@@ -4278,7 +4371,8 @@ int voc_disable_cvp(uint32_t session_id)
 
 		v->voc_state = VOC_CHANGE;
 	}
-
+	if (common.ec_ref_ext)
+		voc_set_ext_ec_ref(AFE_PORT_INVALID, false);
 fail:	mutex_unlock(&v->lock);
 
 	return ret;
@@ -4695,6 +4789,11 @@ int voc_end_voice_call(uint32_t session_id)
 {
 	struct voice_data *v = voice_get_session(session_id);
 	int ret = 0;
+  //                                      
+	char temp_buf[2] = "0";   
+
+   set_start_call(temp_buf,NULL); 
+  //                                    
 
 	if (v == NULL) {
 		pr_err("%s: invalid session_id 0x%x\n", __func__, session_id);
@@ -4721,6 +4820,8 @@ int voc_end_voice_call(uint32_t session_id)
 
 		ret = -EINVAL;
 	}
+	if (common.ec_ref_ext)
+		voc_set_ext_ec_ref(AFE_PORT_INVALID, false);
 
 	mutex_unlock(&v->lock);
 	return ret;
@@ -4734,11 +4835,13 @@ int voc_standby_voice_call(uint32_t session_id)
 	u16 mvm_handle;
 	int ret = 0;
 
-	pr_debug("%s: voc state=%d", __func__, v->voc_state);
 	if (v == NULL) {
 		pr_err("%s: v is NULL\n", __func__);
 		return -EINVAL;
 	}
+
+	pr_debug("%s: voc state=%d", __func__, v->voc_state); //                                              
+
 	if (v->voc_state == VOC_RUN) {
 		apr_mvm = common.apr_q6_mvm;
 		if (!apr_mvm) {
@@ -4837,6 +4940,7 @@ int voc_start_voice_call(uint32_t session_id)
 {
 	struct voice_data *v = voice_get_session(session_id);
 	int ret = 0;
+	char temp_buf[2] = "1";  //                                      
 
 	if (v == NULL) {
 		pr_err("%s: invalid session_id 0x%x\n", __func__, session_id);
@@ -4900,9 +5004,16 @@ int voc_start_voice_call(uint32_t session_id)
 		ret = voice_send_dual_control_cmd(v);
 		if (ret < 0) {
 			pr_err("Err Dual command failed\n");
+		    panic("q6voice timeout at send_dual_control_cmd. Contact WX-BSP-Audio@lge.com"); //temporarily panic code for debugging
 			goto fail;
 		}
 		ret = voice_setup_vocproc(v);
+		//                                      
+		if(ret == 0){
+			set_start_call(temp_buf,NULL); 
+			pr_info("LG audio bsp - stated voice call \n");
+		}
+		//                                    
 		if (ret < 0) {
 			pr_err("setup voice failed\n");
 			goto fail;
@@ -4922,6 +5033,7 @@ int voc_start_voice_call(uint32_t session_id)
 		ret = voice_send_start_voice_cmd(v);
 		if (ret < 0) {
 			pr_err("start voice failed\n");
+		    panic("q6voice timeout at start_voice_cmd. Contact WX-BSP-Audio@lge.com"); //temporarily panic code for debugging
 			goto fail;
 		}
 
@@ -4935,6 +5047,28 @@ int voc_start_voice_call(uint32_t session_id)
 	}
 fail:
 	mutex_unlock(&v->lock);
+	return ret;
+}
+
+int voc_set_ext_ec_ref(uint16_t port_id, bool state)
+{
+	int ret = 0;
+
+	mutex_lock(&common.common_lock);
+	if (state == true) {
+		if (port_id == AFE_PORT_INVALID) {
+			pr_err("%s: Invalid port id", __func__);
+			ret = -EINVAL;
+			goto exit;
+		}
+		common.ec_port_id = port_id;
+		common.ec_ref_ext = true;
+	} else {
+		common.ec_ref_ext = false;
+		common.ec_port_id = port_id;
+	}
+exit:
+	mutex_unlock(&common.common_lock);
 	return ret;
 }
 
@@ -5772,7 +5906,7 @@ static int __init voice_init(void)
 	common.default_vol_step_val = 0;
 	common.default_vol_ramp_duration_ms = DEFAULT_VOLUME_RAMP_DURATION;
 	common.default_mute_ramp_duration_ms = DEFAULT_MUTE_RAMP_DURATION;
-
+	common.ec_ref_ext = false;
 	/* Initialize MVS info. */
 	common.mvs_info.network_type = VSS_NETWORK_ID_DEFAULT;
 

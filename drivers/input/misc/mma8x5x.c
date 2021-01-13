@@ -27,6 +27,7 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/input-polldev.h>
+#include <linux/sensors.h>
 #include <linux/regulator/consumer.h>
 #include <linux/of_gpio.h>
 
@@ -53,6 +54,21 @@
 #define MMA8X5X_BUF_SIZE	7
 
 #define	MMA_SHUTTEDDOWN		(1 << 31)
+#define MMA_STATE_MASK		(~MMA_SHUTTEDDOWN)
+
+static struct sensors_classdev sensors_cdev = {
+	.name = "mma8x5x-accel",
+	.vendor = "Freescale",
+	.version = 1,
+	.handle = SENSORS_ACCELERATION_HANDLE,
+	.type = SENSOR_TYPE_ACCELEROMETER,
+	.max_range = "19.6",
+	.resolution = "0.01",
+	.sensor_power = "0.2",
+	.min_delay = 2000,
+	.fifo_reserved_event_count = 0,
+	.fifo_max_event_count = 0,
+};
 
 struct sensor_regulator {
 	struct regulator *vreg;
@@ -304,6 +320,28 @@ static int mma8x5x_device_stop(struct i2c_client *client)
 	return 0;
 }
 
+static int mma8x5x_device_start(struct i2c_client *client)
+{
+	struct mma8x5x_data *pdata = i2c_get_clientdata(client);
+
+	if (i2c_smbus_write_byte_data(client, MMA8X5X_CTRL_REG1, 0))
+		goto err_out;
+	if (i2c_smbus_write_byte_data(client, MMA8X5X_XYZ_DATA_CFG,
+			pdata->mode))
+		goto err_out;
+
+	/* The BT(boot time) for mma8x5x is 1.55ms according to
+	  *Freescale mma8450Q document. Document Number:MMA8450Q
+	  *Rev: 9.1, 04/2012
+	  */
+	usleep_range(1600, 2000);
+	return 0;
+
+err_out:
+	dev_err(&client->dev, "%s:start device failed", __func__);
+	return -EIO;
+}
+
 static int mma8x5x_read_data(struct i2c_client *client,
 		struct mma8x5x_data_axis *data)
 {
@@ -327,7 +365,7 @@ static void mma8x5x_report_data(struct mma8x5x_data *pdata)
 	struct input_polled_dev *poll_dev = pdata->poll_dev;
 	struct mma8x5x_data_axis data;
 	mutex_lock(&pdata->data_lock);
-	if (pdata->active == MMA_STANDBY) {
+	if ((pdata->active & MMA_STATE_MASK) == MMA_STANDBY) {
 		poll_dev->poll_interval = POLL_STOP_TIME;
 		/* if standby ,set as 10s to slow the poll. */
 		goto out;
@@ -381,32 +419,73 @@ static ssize_t mma8x5x_enable_store(struct device *dev,
 	int ret;
 	unsigned long enable;
 	u8 val = 0;
+
 	ret = kstrtoul(buf, 10, &enable);
 	if (ret)
 		return ret;
 	mutex_lock(&pdata->data_lock);
 	enable = (enable > 0) ? 1 : 0;
-	if (enable && pdata->active == MMA_STANDBY) {
-		val = i2c_smbus_read_byte_data(client, MMA8X5X_CTRL_REG1);
-		ret = i2c_smbus_write_byte_data(client,
-				MMA8X5X_CTRL_REG1, val|0x01);
-		if (!ret) {
+	if (enable) {
+		if (pdata->active & MMA_SHUTTEDDOWN) {
+			ret = mma8x5x_config_regulator(client, 1);
+			if (ret)
+				goto err_failed;
+
+			ret = mma8x5x_device_start(client);
+			if (ret)
+				goto err_failed;
+
+			pdata->active &= ~MMA_SHUTTEDDOWN;
+		}
+		if (pdata->active == MMA_STANDBY) {
+			val = i2c_smbus_read_byte_data(client,
+					MMA8X5X_CTRL_REG1);
+			if (val < 0) {
+				dev_err(dev, "read device state failed!");
+				ret = val;
+				goto err_failed;
+			}
+
+			ret = i2c_smbus_write_byte_data(client,
+					MMA8X5X_CTRL_REG1, val | 0x01);
+			if (ret) {
+				dev_err(dev, "change device state failed!");
+				goto err_failed;
+			}
 			pdata->active = MMA_ACTIVED;
-			dev_dbg(dev,
-				"%s:mma enable setting active.\n", __func__);
+			dev_dbg(dev, "%s:mma enable setting active.\n",
+					__func__);
 		}
-	} else if (enable == 0  && pdata->active == MMA_ACTIVED) {
-		val = i2c_smbus_read_byte_data(client, MMA8X5X_CTRL_REG1);
-		ret = i2c_smbus_write_byte_data(client,
-			MMA8X5X_CTRL_REG1, val & 0xFE);
-		if (!ret) {
+	} else if (enable == 0) {
+		if (pdata->active == MMA_ACTIVED) {
+			val = i2c_smbus_read_byte_data(client,
+					MMA8X5X_CTRL_REG1);
+			if (val < 0) {
+				dev_err(dev, "read device state failed!");
+				ret = val;
+				goto err_failed;
+			}
+
+			ret = i2c_smbus_write_byte_data(client,
+				MMA8X5X_CTRL_REG1, val & 0xFE);
+			if (ret) {
+				dev_err(dev, "change device state failed!");
+				goto err_failed;
+			}
+
 			pdata->active = MMA_STANDBY;
-			dev_dbg(dev,
-				"%s:mma enable setting inactive.\n", __func__);
+			dev_dbg(dev, "%s:mma enable setting inactive.\n",
+					__func__);
 		}
+		if (!mma8x5x_config_regulator(client, 0))
+			pdata->active |= MMA_SHUTTEDDOWN;
 	}
 	mutex_unlock(&pdata->data_lock);
 	return count;
+
+err_failed:
+	mutex_unlock(&pdata->data_lock);
+	return ret;
 }
 static ssize_t mma8x5x_position_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
@@ -580,11 +659,19 @@ static int __devinit mma8x5x_probe(struct i2c_client *client,
 		result = -EINVAL;
 		goto err_create_sysfs;
 	}
+	result = sensors_classdev_register(&client->dev, &sensors_cdev);
+	if (result) {
+		dev_err(&client->dev, "create class device file failed!\n");
+		result = -EINVAL;
+		goto err_create_class_sysfs;
+	}
 	dev_info(&client->dev,
 		"%s:mma8x5x device driver probe successfully, position =%d\n",
 		__func__, pdata->position);
 
 	return 0;
+err_create_class_sysfs:
+	sysfs_remove_group(&idev->dev.kobj, &mma8x5x_attr_group);
 err_create_sysfs:
 	input_unregister_polled_device(pdata->poll_dev);
 err_register_polled_device:
@@ -617,6 +704,8 @@ static int mma8x5x_suspend(struct device *dev)
 	struct mma8x5x_data *pdata = i2c_get_clientdata(client);
 	if (pdata->active == MMA_ACTIVED)
 		mma8x5x_device_stop(client);
+	if (pdata->active & MMA_SHUTTEDDOWN)
+		return 0;
 	if (!mma8x5x_config_regulator(client, 0))
 		/* The highest bit sotres the power state */
 		pdata->active |= MMA_SHUTTEDDOWN;
@@ -628,22 +717,16 @@ static int mma8x5x_resume(struct device *dev)
 	int val = 0;
 	struct i2c_client *client = to_i2c_client(dev);
 	struct mma8x5x_data *pdata = i2c_get_clientdata(client);
+
+	/* No need to power on while device is shutdowned from standby state */
+	if (pdata->active == (MMA_SHUTTEDDOWN | MMA_STANDBY))
+		return 0;
 	if (pdata->active & MMA_SHUTTEDDOWN) {
 		if (mma8x5x_config_regulator(client, 1))
 			goto out;
 
-		if (i2c_smbus_write_byte_data(client, MMA8X5X_CTRL_REG1, 0))
+		if (mma8x5x_device_start(client))
 			goto out;
-
-		if (i2c_smbus_write_byte_data(client, MMA8X5X_XYZ_DATA_CFG,
-				pdata->mode))
-			goto out;
-
-		/* The BT(boot time) for mma8x5x is 1.55ms according to
-		Freescale mma8450Q document. Document Number:MMA8450Q
-		Rev: 9.1, 04/2012
-		*/
-		usleep_range(1600, 2000);
 		pdata->active &= ~MMA_SHUTTEDDOWN;
 	}
 	if (pdata->active == MMA_ACTIVED) {

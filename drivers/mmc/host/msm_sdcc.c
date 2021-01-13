@@ -63,6 +63,11 @@
 #include "msm_sdcc.h"
 #include "msm_sdcc_dml.h"
 
+/// SD_CARD_DET polarity change.
+#if defined(CONFIG_MACH_MSM8226_W7_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_G2MDS_OPEN_CIS) || defined(CONFIG_MACH_MSM8226_G2MDS_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_G2MSS_GLOBAL_COM)
+#include <mach/board_lge.h>
+#endif /* CONFIG_MACH_MSM8226_W7_OPEN_CIS || CONFIG_MACH_MSM8226_W7_OPEN_EU || CONFIG_MACH_MSM8226_W7_GLOBAL_COM || CONFIG_MACH_MSM8226_W7_GLOBAL_SCA */
+
 #define DRIVER_NAME "msm-sdcc"
 
 #define DBG(host, fmt, args...)	\
@@ -516,8 +521,6 @@ msmsdcc_request_end(struct msmsdcc_host *host, struct mmc_request *mrq)
 
 	if (mrq->data)
 		mrq->data->bytes_xfered = host->curr.data_xfered;
-	if (mrq->cmd->error == -ETIMEDOUT)
-		mdelay(5);
 
 	msmsdcc_reset_dpsm(host);
 
@@ -5573,8 +5576,23 @@ static void msmsdcc_dt_get_cd_wp_gpio(struct device *dev,
 	enum of_gpio_flags flags = OF_GPIO_ACTIVE_LOW;
 	struct device_node *np = dev->of_node;
 
+/// SD_CARD_DET polarity change.
+#if defined(CONFIG_MACH_MSM8226_W7_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_SCA)
+	hw_rev_type hw_rev;
+	hw_rev = lge_get_board_revno();
+#endif /* CONFIG_MACH_MSM8226_W7_OPEN_CIS || CONFIG_MACH_MSM8226_W7_OPEN_EU || CONFIG_MACH_MSM8226_W7_GLOBAL_COM || CONFIG_MACH_MSM8226_W7_GLOBAL_SCA */
+
 	pdata->status_gpio = of_get_named_gpio_flags(np,
 			"cd-gpios", 0, &flags);
+
+/// SD_CARD_DET polarity change.
+#if defined(CONFIG_MACH_MSM8226_W7_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7_GLOBAL_SCA) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_COM) || defined(CONFIG_MACH_MSM8226_W7N_GLOBAL_SCA)
+	if( hw_rev <= HW_REV_A )
+		flags = OF_GPIO_ACTIVE_LOW;
+	else
+		flags = 0x0;
+#endif /* CONFIG_MACH_MSM8226_W7_OPEN_CIS || CONFIG_MACH_MSM8226_W7_OPEN_EU || CONFIG_MACH_MSM8226_W7_GLOBAL_COM || CONFIG_MACH_MSM8226_W7_GLOBAL_SCA */
+
 	if (gpio_is_valid(pdata->status_gpio)) {
 		struct platform_device *pdev = container_of(dev,
 						struct platform_device, dev);
@@ -5850,6 +5868,11 @@ static struct mmc_platform_data *msmsdcc_populate_pdata(struct device *dev)
 err:
 	return NULL;
 }
+
+#if defined( CONFIG_BCMDHD )  //joon For device tree.
+extern int sdc3_status_register(void (*cb)(int card_present, void *dev), void *dev);
+extern unsigned int sdc3_status(struct device* );
+#endif
 
 static int
 msmsdcc_probe(struct platform_device *pdev)
@@ -6225,6 +6248,16 @@ msmsdcc_probe(struct platform_device *pdev)
 	 * Setup card detect change
 	 */
 
+#if defined( CONFIG_BCMDHD ) //joon For device tree.
+            printk("J:%s-%d> plat->nonremovable = %d\n", __FUNCTION__, host->pdev->id, plat->nonremovable );
+            if( host->pdev->id == 3 )
+            {
+                plat->register_status_notify = sdc3_status_register;
+                plat->status = sdc3_status;
+            }
+#endif
+        
+
 	if (!plat->status_gpio)
 		plat->status_gpio = -ENOENT;
 	if (!plat->wpswitch_gpio)
@@ -6475,7 +6508,7 @@ static void msmsdcc_remove_debugfs(struct msmsdcc_host *host)
 	host->debugfs_host_dir = NULL;
 }
 #else
-static void msmsdcc_remove_debugfs(msmsdcc_host *host) {}
+static void msmsdcc_remove_debugfs(struct msmsdcc_host *host) {}
 #endif
 
 static int msmsdcc_remove(struct platform_device *pdev)
@@ -6682,7 +6715,7 @@ static inline void msmsdcc_ungate_clock(struct msmsdcc_host *host)
 }
 #endif
 
-#if CONFIG_DEBUG_FS
+#ifdef CONFIG_DEBUG_FS
 static void msmsdcc_print_pm_stats(struct msmsdcc_host *host, ktime_t start,
 				   const char *func, int err)
 {
@@ -6964,7 +6997,7 @@ static const struct dev_pm_ops msmsdcc_dev_pm_ops = {
 
 static const struct of_device_id msmsdcc_dt_match[] = {
 	{.compatible = "qcom,msm-sdcc"},
-
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, msmsdcc_dt_match);
 

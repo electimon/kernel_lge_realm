@@ -82,6 +82,12 @@ static int __devinit vfe_probe(struct platform_device *pdev)
 		of_property_read_u32((&pdev->dev)->of_node,
 			"cell-index", &pdev->id);
 		match_dev = of_match_device(msm_vfe_dt_match, &pdev->dev);
+/*                                                                                                                                         */
+		if(!match_dev){
+			pr_err("%s: no match dev found\n", __func__);
+			return -EINVAL;
+		}
+/*                                                                                                                                         */
 		vfe_dev->hw_info =
 			(struct msm_vfe_hardware_info *) match_dev->data;
 	} else {
@@ -140,6 +146,7 @@ static int __devinit vfe_probe(struct platform_device *pdev)
 		&vfe_vb2_ops, &vfe_layout);
 	if (rc < 0) {
 		pr_err("%s: Unable to create buffer manager\n", __func__);
+		msm_sd_unregister(&vfe_dev->subdev);
 		kfree(vfe_dev);
 		return -EINVAL;
 	}

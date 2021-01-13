@@ -161,6 +161,7 @@ struct synaptics_rmi4_device_info {
 	unsigned char product_id_string[SYNAPTICS_RMI4_PRODUCT_ID_SIZE + 1];
 	unsigned char build_id[SYNAPTICS_RMI4_BUILD_ID_SIZE];
 	unsigned char config_id[3];
+	struct mutex support_fn_list_mutex;
 	struct list_head support_fn_list;
 };
 
@@ -186,6 +187,10 @@ struct synaptics_rmi4_device_info {
  * @irq: attention interrupt
  * @sensor_max_x: sensor maximum x value
  * @sensor_max_y: sensor maximum y value
+ * @disp_maxx: max x value of display
+ * @disp_maxy: max y value of display
+ * @disp_minx: min x value of display
+ * @disp_miny: min y value of display
  * @irq_enabled: flag for indicating interrupt enable status
  * @touch_stopped: flag to stop interrupt thread processing
  * @fingers_on_2d: flag to indicate presence of fingers in 2d area
@@ -230,6 +235,10 @@ struct synaptics_rmi4_data {
 	int irq;
 	int sensor_max_x;
 	int sensor_max_y;
+	int disp_maxx;
+	int disp_maxy;
+	int disp_minx;
+	int disp_miny;
 	bool irq_enabled;
 	bool touch_stopped;
 	bool fingers_on_2d;
@@ -277,14 +286,6 @@ void synaptics_rmi4_new_function(enum exp_fn fn_type, bool insert,
 		void (*func_remove)(struct synaptics_rmi4_data *rmi4_data),
 		void (*func_attn)(struct synaptics_rmi4_data *rmi4_data,
 				unsigned char intr_mask));
-
-static inline ssize_t synaptics_rmi4_show_error(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	dev_warn(dev, "%s Attempted to read from write-only attribute %s\n",
-			__func__, attr->attr.name);
-	return -EPERM;
-}
 
 static inline ssize_t synaptics_rmi4_store_error(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)

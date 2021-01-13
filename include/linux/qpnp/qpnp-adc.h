@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -190,6 +190,7 @@ enum qpnp_adc_calib_type {
  * %CHAN_PATH_SCALING2: ratio of {1, 4}
  * %CHAN_PATH_SCALING3: ratio of {1, 6}
  * %CHAN_PATH_SCALING4: ratio of {1, 20}
+ * %CHAN_PATH_SCALING5: ratio of {1, 8}
  * %CHAN_PATH_NONE: Do not use this pre-scaling ratio type.
  *
  * The pre-scaling is applied for signals to be within the voltage range
@@ -201,6 +202,7 @@ enum qpnp_adc_channel_scaling_param {
 	PATH_SCALING2,
 	PATH_SCALING3,
 	PATH_SCALING4,
+	PATH_SCALING5,
 	PATH_SCALING_NONE,
 };
 
@@ -615,6 +617,21 @@ enum qpnp_adc_tm_channel_select	{
 	QPNP_ADC_TM_CH_SELECT_NONE
 };
 
+/**
+ * Channel index for the corresponding index to qpnp_adc_tm_channel_selec
+ */
+enum qpnp_adc_tm_channel_num {
+	QPNP_ADC_TM_CHAN0 = 0,
+	QPNP_ADC_TM_CHAN1,
+	QPNP_ADC_TM_CHAN2,
+	QPNP_ADC_TM_CHAN3,
+	QPNP_ADC_TM_CHAN4,
+	QPNP_ADC_TM_CHAN5,
+	QPNP_ADC_TM_CHAN6,
+	QPNP_ADC_TM_CHAN7,
+	QPNP_ADC_TM_CHAN_NONE
+};
+
 enum qpnp_comp_scheme_type {
 	COMP_ID_GF = 0,
 	COMP_ID_SMIC,
@@ -875,7 +892,8 @@ static const struct qpnp_vadc_scaling_ratio qpnp_vadc_amux_scaling_ratio[] = {
 	{1, 3},
 	{1, 4},
 	{1, 6},
-	{1, 20}
+	{1, 20},
+	{1, 8}
 };
 
 /**

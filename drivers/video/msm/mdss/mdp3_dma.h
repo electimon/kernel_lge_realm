@@ -261,6 +261,8 @@ struct mdp3_dma {
 			struct mdp3_dma_source *source_config,
 			struct mdp3_dma_output_config *output_config);
 
+	void (*dma_config_source)(struct mdp3_dma *dma);
+
 	int (*start)(struct mdp3_dma *dma, struct mdp3_intf *intf);
 
 	int (*stop)(struct mdp3_dma *dma, struct mdp3_intf *intf);

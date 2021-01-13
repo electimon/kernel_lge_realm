@@ -70,9 +70,10 @@
 #include <mach/usb_trace.h>
 #include "ci13xxx_udc.h"
 
-/* Turns on streaming. overrides CI13XXX_DISABLE_STREAMING */
-static unsigned int streaming;
-module_param(streaming, uint, S_IRUGO | S_IWUSR);
+#ifdef CONFIG_USB_G_LGE_ANDROID_PFSC
+#include <mach/board_lge.h>
+#define PORTSC_PFSC BIT(24)
+#endif
 
 /******************************************************************************
  * DEFINE
@@ -340,6 +341,10 @@ static int hw_device_reset(struct ci13xxx *udc)
 {
 	int delay_count = 25; /* 250 usec */
 
+#ifdef CONFIG_USB_G_LGE_ANDROID_PFSC
+	enum lge_boot_mode_type boot_mode;
+#endif
+
 	/* should flush & stop before reset */
 	hw_cwrite(CAP_ENDPTFLUSH, ~0, ~0);
 	hw_cwrite(CAP_USBCMD, USBCMD_RS, 0);
@@ -379,6 +384,19 @@ static int hw_device_reset(struct ci13xxx *udc)
 		return -ENODEV;
 	}
 
+#ifdef CONFIG_USB_G_LGE_ANDROID_PFSC
+
+	/* USB FS only used in 130K */
+
+	boot_mode = lge_get_boot_mode();
+    if ((boot_mode == LGE_BOOT_MODE_QEM_130K) ||
+        (boot_mode == LGE_BOOT_MODE_PIF_130K))
+	{
+		hw_cwrite(CAP_PORTSC, PORTSC_PFSC, PORTSC_PFSC);
+	}
+
+#endif
+
 	return 0;
 }
 
@@ -392,19 +410,31 @@ static int hw_device_reset(struct ci13xxx *udc)
 static int hw_device_state(u32 dma)
 {
 	struct ci13xxx *udc = _udc;
+	struct usb_gadget *gadget = &udc->gadget;
 
 	if (dma) {
-		if (streaming || !(udc->udc_driver->flags &
-				CI13XXX_DISABLE_STREAMING))
+		if (gadget->streaming_enabled || !(udc->udc_driver->flags &
+				CI13XXX_DISABLE_STREAMING)) {
 			hw_cwrite(CAP_USBMODE, USBMODE_SDIS, 0);
-		else
+			pr_debug("%s(): streaming mode is enabled. USBMODE:%x\n",
+				__func__, hw_cread(CAP_USBMODE, ~0));
+		} else {
 			hw_cwrite(CAP_USBMODE, USBMODE_SDIS, USBMODE_SDIS);
-
+			pr_debug("%s(): streaming mode is disabled. USBMODE:%x\n",
+				__func__, hw_cread(CAP_USBMODE, ~0));
+		}
 		hw_cwrite(CAP_ENDPTLISTADDR, ~0, dma);
 
 		if (udc->udc_driver->notify_event)
 			udc->udc_driver->notify_event(udc,
 				CI13XXX_CONTROLLER_CONNECT_EVENT);
+
+		/* Set BIT(31) to enable AHB2AHB Bypass functionality */
+		if (udc->udc_driver->flags & CI13XXX_ENABLE_AHB2AHB_BYPASS) {
+			hw_awrite(ABS_AHBMODE, AHB2AHB_BYPASS, AHB2AHB_BYPASS);
+			pr_debug("%s(): ByPass Mode is enabled. AHBMODE:%x\n",
+					__func__, hw_aread(ABS_AHBMODE, ~0));
+		}
 
 		/* interrupt, error, port change, reset, sleep/suspend */
 		hw_cwrite(CAP_USBINTR, ~0,
@@ -413,6 +443,12 @@ static int hw_device_state(u32 dma)
 	} else {
 		hw_cwrite(CAP_USBCMD, USBCMD_RS, 0);
 		hw_cwrite(CAP_USBINTR, ~0, 0);
+		/* Clear BIT(31) to disable AHB2AHB Bypass functionality */
+		if (udc->udc_driver->flags & CI13XXX_ENABLE_AHB2AHB_BYPASS) {
+			hw_awrite(ABS_AHBMODE, AHB2AHB_BYPASS, 0);
+			pr_debug("%s(): ByPass Mode is disabled. AHBMODE:%x\n",
+					__func__, hw_aread(ABS_AHBMODE, ~0));
+		}
 	}
 	return 0;
 }
@@ -2783,6 +2819,7 @@ __acquires(udc->lock)
 					udc->remote_wakeup = 1;
 					err = isr_setup_status_phase(udc);
 					break;
+#ifdef CONFIG_USB_G_LGE_ANDROID_OTG // this feature is not set.
 				case USB_DEVICE_B_HNP_ENABLE:
 					udc->gadget.b_hnp_enable = 1;
 					err = isr_setup_status_phase(udc);
@@ -2793,6 +2830,17 @@ __acquires(udc->lock)
 					break;
 				case USB_DEVICE_A_ALT_HNP_SUPPORT:
 					break;
+#else
+				case USB_DEVICE_B_HNP_ENABLE:
+					err = 0;
+					break;
+				case USB_DEVICE_A_HNP_SUPPORT:
+					err = 0;
+					break;
+				case USB_DEVICE_A_ALT_HNP_SUPPORT:
+					err = 0;
+					break;
+#endif //                            
 				case USB_DEVICE_TEST_MODE:
 					tmode = le16_to_cpu(req.wIndex) >> 8;
 					switch (tmode) {
@@ -2805,6 +2853,7 @@ __acquires(udc->lock)
 						err = isr_setup_status_phase(
 								udc);
 						break;
+#ifdef CONFIG_USB_G_LGE_ANDROID_OTG // this feature is not set.
 					case TEST_OTG_SRP_REQD:
 						udc->gadget.otg_srp_reqd = 1;
 						err = isr_setup_status_phase(
@@ -2815,6 +2864,14 @@ __acquires(udc->lock)
 						err = isr_setup_status_phase(
 								udc);
 						break;
+#else
+					case TEST_OTG_SRP_REQD:
+						err = 0;
+						break;
+					case TEST_OTG_HNP_REQD:
+						err = 0;
+						break;
+#endif
 					default:
 						break;
 					}

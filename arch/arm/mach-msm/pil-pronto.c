@@ -71,6 +71,11 @@
 #define HALT_ACK_TIMEOUT_US				500000
 #define CLK_UPDATE_TIMEOUT_US				500000
 
+//                                            
+static int enable_pronto_ramdump;
+module_param(enable_pronto_ramdump, int, S_IRUGO | S_IWUSR);
+//             
+
 struct pronto_data {
 	void __iomem *base;
 	void __iomem *reset_base;
@@ -334,7 +339,7 @@ static irqreturn_t wcnss_wdog_bite_irq_hdlr(int irq, void *dev_id)
 		pr_err("Ignoring wcnss bite irq, restart in progress\n");
 		return IRQ_HANDLED;
 	}
-	wcnss_pronto_log_debug_regs();
+	wcnss_log_debug_regs_on_bite();
 
 	drv->restart_inprogress = true;
 	restart_wcnss(drv);
@@ -396,8 +401,10 @@ static void crash_shutdown(const struct subsys_desc *subsys)
 static int wcnss_ramdump(int enable, const struct subsys_desc *subsys)
 {
 	struct pronto_data *drv = subsys_to_drv(subsys);
-
-	if (!enable)
+//                                            
+//	if (!enable)
+	if(!enable_pronto_ramdump)
+//             
 		return 0;
 
 	return pil_do_ramdump(&drv->desc, drv->ramdump_dev);

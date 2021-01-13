@@ -32,7 +32,6 @@
 #define SHOW_PROGRESS
 #define MAX_FIRMWARE_ID_LEN 10
 #define FORCE_UPDATE false
-#define DO_LOCKDOWN false
 #define INSIDE_FIRMWARE_UPDATE
 
 #define FW_IMAGE_OFFSET 0x100
@@ -353,8 +352,7 @@ static void parse_header(void)
 		(data->options_firmware_id == (1 << OPTION_BUILD_INFO));
 
 	if (img->is_contain_build_info) {
-		img->firmware_id = extract_uint(data->firmware_id);
-		img->package_id = (data->pkg_id_rev_msb << 8) |
+		img->package_id = (data->pkg_id_msb << 8) |
 				data->pkg_id_lsb;
 		img->package_revision_id = (data->pkg_id_rev_msb << 8) |
 				data->pkg_id_rev_lsb;
@@ -784,6 +782,10 @@ static enum flash_area fwu_go_nogo(void)
 	firmware_id[3] = 0;
 	deviceFirmwareID = extract_uint(firmware_id);
 
+/*           
+                                                 
+                                                   
+                                   */
 	/* .img firmware id */
 	if (img->is_contain_build_info) {
 		dev_err(&i2c_client->dev,
@@ -829,7 +831,11 @@ static enum flash_area fwu_go_nogo(void)
 	if (imageFirmwareID > deviceFirmwareID) {
 		flash_area = UI_FIRMWARE;
 		goto exit;
-	} else if (imageFirmwareID < deviceFirmwareID) {
+/*           
+                                      
+                                                            
+                                   */
+	} else if (imageFirmwareID <= deviceFirmwareID) {
 		flash_area = NONE;
 		dev_info(&i2c_client->dev,
 			"%s: Img fw is older than device fw. Skip fw update.\n",
@@ -1115,7 +1121,11 @@ static int fwu_enter_flash_prog(bool force)
 	if (retval < 0)
 		return retval;
 
-	if (f01_device_status.flash_prog) {
+	if (force) {
+		dev_info(&fwu->rmi4_data->i2c_client->dev,
+			"%s: Force to enter flash prog mode\n",
+			__func__);
+	} else if (f01_device_status.flash_prog) {
 		dev_info(&fwu->rmi4_data->i2c_client->dev,
 				"%s: Already in flash prog mode\n",
 				__func__);
@@ -1475,6 +1485,9 @@ static int fwu_do_reflash(void)
 			"%s: Erase all command written\n",
 			__func__);
 
+	if (fwu->polling_mode)
+		msleep(100);
+
 	retval = fwu_wait_for_idle(ERASE_WAIT_MS);
 	if (retval < 0)
 		return retval;
@@ -1757,7 +1770,7 @@ exit:
 	kfree(fwu->ext_data_source);
 	fwu->ext_data_source = NULL;
 	fwu->force_update = FORCE_UPDATE;
-	fwu->do_lockdown = DO_LOCKDOWN;
+	fwu->do_lockdown = rmi4_data->board->do_lockdown;
 	return retval;
 }
 
@@ -1800,7 +1813,7 @@ exit:
 	kfree(fwu->ext_data_source);
 	fwu->ext_data_source = NULL;
 	fwu->force_update = FORCE_UPDATE;
-	fwu->do_lockdown = DO_LOCKDOWN;
+	fwu->do_lockdown = rmi4_data->board->do_lockdown;
 	return retval;
 }
 
@@ -1835,7 +1848,7 @@ exit:
 	kfree(fwu->ext_data_source);
 	fwu->ext_data_source = NULL;
 	fwu->force_update = FORCE_UPDATE;
-	fwu->do_lockdown = DO_LOCKDOWN;
+	fwu->do_lockdown = rmi4_data->board->do_lockdown;
 	return retval;
 }
 
@@ -2025,6 +2038,9 @@ static const struct file_operations debug_dump_info_fops = {
 static void synaptics_rmi4_fwu_attn(struct synaptics_rmi4_data *rmi4_data,
 		unsigned char intr_mask)
 {
+	if (!fwu)
+		return;
+
 	if (fwu->intr_mask & intr_mask)
 		fwu->interrupt_flag = true;
 
@@ -2045,26 +2061,26 @@ static struct device_attribute attrs[] = {
 	__ATTR(fw_name, S_IRUGO | S_IWUSR | S_IWGRP,
 			fwu_sysfs_image_name_show,
 			fwu_sysfs_image_name_store),
-	__ATTR(force_update_fw, S_IRUGO | S_IWUSR | S_IWGRP,
-			synaptics_rmi4_show_error,
+	__ATTR(force_update_fw, S_IWUSR | S_IWGRP,
+			NULL,
 			fwu_sysfs_force_reflash_store),
-	__ATTR(update_fw, S_IRUGO | S_IWUSR | S_IWGRP,
-			synaptics_rmi4_show_error,
+	__ATTR(update_fw, S_IWUSR | S_IWGRP,
+			NULL,
 			fwu_sysfs_do_reflash_store),
-	__ATTR(writeconfig, S_IRUGO | S_IWUSR | S_IWGRP,
-			synaptics_rmi4_show_error,
+	__ATTR(writeconfig, S_IWUSR | S_IWGRP,
+			NULL,
 			fwu_sysfs_write_config_store),
-	__ATTR(writelockdown, S_IRUGO | S_IWUSR | S_IWGRP,
-			synaptics_rmi4_show_error,
+	__ATTR(writelockdown, S_IWUSR | S_IWGRP,
+			NULL,
 			fwu_sysfs_write_lockdown_store),
-	__ATTR(readconfig, S_IRUGO | S_IWUSR | S_IWGRP,
-			synaptics_rmi4_show_error,
+	__ATTR(readconfig, S_IWUSR | S_IWGRP,
+			NULL,
 			fwu_sysfs_read_config_store),
-	__ATTR(configarea, S_IRUGO | S_IWUSR | S_IWGRP,
-			synaptics_rmi4_show_error,
+	__ATTR(configarea, S_IWUSR | S_IWGRP,
+			NULL,
 			fwu_sysfs_config_area_store),
-	__ATTR(imagesize, S_IRUGO | S_IWUSR | S_IWGRP,
-			synaptics_rmi4_show_error,
+	__ATTR(imagesize, S_IWUSR | S_IWGRP,
+			NULL,
 			fwu_sysfs_image_size_store),
 	__ATTR(blocksize, S_IRUGO,
 			fwu_sysfs_block_size_show,
@@ -2110,6 +2126,7 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 		dev_err(&rmi4_data->i2c_client->dev,
 				"%s: Failed to alloc mem for fwu\n",
 				__func__);
+		retval = -ENOMEM;
 		goto exit;
 	}
 
@@ -2135,10 +2152,12 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 		dev_dbg(&rmi4_data->i2c_client->dev,
 				"%s: Failed to read PDT properties, assuming 0x00\n",
 				__func__);
+		goto exit_free_mem;
 	} else if (pdt_props.has_bsr) {
 		dev_err(&rmi4_data->i2c_client->dev,
 				"%s: Reflash for LTS not currently supported\n",
 				__func__);
+		retval = -EINVAL;
 		goto exit_free_mem;
 	}
 
@@ -2166,7 +2185,7 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 
 	fwu->initialized = true;
 	fwu->force_update = FORCE_UPDATE;
-	fwu->do_lockdown = DO_LOCKDOWN;
+	fwu->do_lockdown = rmi4_data->board->do_lockdown;
 	fwu->initialized = true;
 	fwu->polling_mode = false;
 
@@ -2237,7 +2256,7 @@ exit_free_fwu:
 	fwu = NULL;
 
 exit:
-	return 0;
+	return retval;
 }
 
 static void synaptics_rmi4_fwu_remove(struct synaptics_rmi4_data *rmi4_data)
@@ -2282,6 +2301,7 @@ static void __exit rmi4_fw_update_module_exit(void)
 module_init(rmi4_fw_update_module_init);
 module_exit(rmi4_fw_update_module_exit);
 
+MODULE_FIRMWARE("synaptics/PR1237618-DS4.3.5.0.16.img");
 MODULE_AUTHOR("Synaptics, Inc.");
 MODULE_DESCRIPTION("RMI4 FW Update Module");
 MODULE_LICENSE("GPL v2");

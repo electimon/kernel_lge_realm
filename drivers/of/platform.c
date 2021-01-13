@@ -207,6 +207,11 @@ struct platform_device *of_platform_device_create_pdata(
 	if (!of_device_is_available(np))
 		return NULL;
 
+#ifdef CONFIG_MACH_LGE
+	if (!of_device_is_available_revision(np))
+		return NULL;
+#endif
+
 	dev = of_device_alloc(np, bus_id, parent);
 	if (!dev)
 		return NULL;
@@ -327,10 +332,9 @@ static const struct of_dev_auxdata *of_dev_lookup(const struct of_dev_auxdata *l
 	for(; lookup->compatible != NULL; lookup++) {
 		if (!of_device_is_compatible(np, lookup->compatible))
 			continue;
-		if (of_address_to_resource(np, 0, &res))
-			continue;
-		if (res.start != lookup->phys_addr)
-			continue;
+		if (!of_address_to_resource(np, 0, &res))
+			if (res.start != lookup->phys_addr)
+				continue;
 		pr_debug("%s: devname=%s\n", np->full_name, lookup->name);
 		return lookup;
 	}

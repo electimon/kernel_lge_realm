@@ -20,6 +20,8 @@
 #include <mach/rpm-regulator-smd.h>
 #include <linux/regulator/consumer.h>
 
+/*#define CONFIG_MSMB_CAMERA_DEBUG*/
+
 #undef CDBG
 #ifdef CONFIG_MSMB_CAMERA_DEBUG
 #define CDBG(fmt, args...) pr_err(fmt, ##args)
@@ -259,14 +261,21 @@ static int32_t msm_sensor_get_dt_vreg_data(struct device_node *of_node,
 	struct msm_camera_sensor_board_info *sensordata)
 {
 	int32_t rc = 0, i = 0;
-	uint32_t count = 0;
+	int32_t count = 0;  /*                                                              */
 	uint32_t *vreg_array = NULL;
 
 	count = of_property_count_strings(of_node, "qcom,cam-vreg-name");
 	CDBG("%s qcom,cam-vreg-name count %d\n", __func__, count);
 
+/*                                                                */
+	#if 0 // QCT original
 	if (!count)
 		return 0;
+	#else
+	if (count <= 0)
+		return 0;
+	#endif
+/*                                                                */
 
 	sensordata->cam_vreg = kzalloc(sizeof(struct camera_vreg_t) * count,
 		GFP_KERNEL);
@@ -566,7 +575,7 @@ int32_t msm_sensor_init_gpio_pin_tbl(struct device_node *of_node,
 		}
 		gconf->gpio_num_info->gpio_num[SENSOR_GPIO_STANDBY] =
 			gpio_array[val];
-		CDBG("%s qcom,gpio-reset %d\n", __func__,
+		CDBG("%s qcom,gpio-standby %d\n", __func__,
 			gconf->gpio_num_info->gpio_num[SENSOR_GPIO_STANDBY]);
 	}
 
@@ -751,6 +760,18 @@ static int32_t msm_sensor_get_dt_data(struct device_node *of_node,
 		pr_err("%s failed %d\n", __func__, __LINE__);
 		goto ERROR1;
 	}
+	
+/*                                                                                   */
+	rc = of_property_read_u32(of_node, "qcom,maker-gpio",
+		&sensordata->sensor_init_params->maker_gpio);
+	CDBG("%s qcom,maker-gpio %d, rc %d\n", __func__,
+		sensordata->sensor_init_params->maker_gpio, rc);
+	if (rc < 0) {
+		/* Set default maker-gpio */
+		sensordata->sensor_init_params->maker_gpio = -1;
+		rc = 0;
+	}
+/*                                                                                   */
 
 	rc = of_property_read_u32(of_node, "qcom,mount-angle",
 		&sensordata->sensor_init_params->sensor_mount_angle);
@@ -1077,6 +1098,11 @@ int32_t msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 		goto power_up_failed;
 	}
 
+	/*                                                                       */
+	if(strncmp(s_ctrl->sensordata->sensor_name, "hi707", strlen("hi707")) == 0)
+		s_ctrl->isFirstStream = TRUE;
+	/*                                                                       */
+
 	CDBG("%s exit\n", __func__);
 	return 0;
 power_up_failed:
@@ -1202,7 +1228,13 @@ int32_t msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	msm_camera_request_gpio_table(
 		data->gpio_conf->cam_gpio_req_tbl,
 		data->gpio_conf->cam_gpio_req_tbl_size, 0);
-	CDBG("%s exit\n", __func__);
+
+	/*                                                                       */
+	if(strncmp(s_ctrl->sensordata->sensor_name, "hi707", strlen("hi707")) == 0)
+		s_ctrl->isFirstStream = FALSE;
+	/*                                                                       */
+
+	pr_err("%s exit\n", __func__);
 	return 0;
 }
 
@@ -1213,7 +1245,7 @@ int32_t msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl)
 	rc = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
 			s_ctrl->sensor_i2c_client,
 			s_ctrl->sensordata->slave_info->sensor_id_reg_addr,
-			&chipid, MSM_CAMERA_I2C_WORD_DATA);
+			&chipid, MSM_CAMERA_I2C_WORD_DATA);   /*                                  */
 	if (rc < 0) {
 		pr_err("%s: %s: read id failed\n", __func__,
 			s_ctrl->sensordata->sensor_name);
@@ -1245,6 +1277,7 @@ static void msm_sensor_stop_stream(struct msm_sensor_ctrl_t *s_ctrl)
 		s_ctrl->stop_setting.reg_setting = NULL;
 	}
 	mutex_unlock(s_ctrl->msm_sensor_mutex);
+	pr_err("%s exit\n", __func__);
 	return;
 }
 
@@ -1272,8 +1305,9 @@ static long msm_sensor_subdev_ioctl(struct v4l2_subdev *sd,
 	case VIDIOC_MSM_SENSOR_GET_AF_STATUS:
 		return msm_sensor_get_af_status(s_ctrl, argp);
 	case VIDIOC_MSM_SENSOR_RELEASE:
-	case MSM_SD_SHUTDOWN:
 		msm_sensor_stop_stream(s_ctrl);
+		return 0;
+	case MSM_SD_SHUTDOWN:
 		return 0;
 	default:
 		return -ENOIOCTLCMD;
@@ -1415,7 +1449,6 @@ int32_t msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl,
 			rc = -EFAULT;
 			break;
 		}
-
 		reg_setting = kzalloc(conf_array.size *
 			(sizeof(struct msm_camera_i2c_reg_array)), GFP_KERNEL);
 		if (!reg_setting) {
@@ -1438,6 +1471,42 @@ int32_t msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl,
 		kfree(reg_setting);
 		break;
 	}
+	//                                                          
+
+	case CFG_READ_I2C_ARRAY_LG:{
+		#if 1
+		struct msm_camera_i2c_reg_setting reg_setting;
+		uint16_t local_data = 0;
+		uint16_t read_bank_addr = 0;
+			if (copy_from_user(&reg_setting,
+				(void *)cdata->cfg.setting,
+				sizeof(struct msm_camera_i2c_reg_setting))) {
+				pr_err("%s:%d failed\n", __func__, __LINE__);
+				rc = -EFAULT;
+				break;
+			}
+			read_bank_addr = reg_setting.reg_setting->reg_addr;
+
+			pr_err("%s:CFG_Bank_READ_I2C:", __func__);
+			pr_err("reg_addr=0x%x, reg_data=0x%x\n", reg_setting.reg_setting->reg_addr, reg_setting.reg_setting->reg_data);
+
+			rc = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
+					s_ctrl->sensor_i2c_client,
+					read_bank_addr,
+					&local_data, reg_setting.data_type);
+			if (rc < 0) {
+				pr_err("%s:%d: i2c_read failed\n", __func__, __LINE__);
+				break;
+			}
+			pr_err("[B2MINI] %s bank %d\n", __func__, local_data);
+			if (copy_to_user((void *)reg_setting.value, &local_data, sizeof(uint16_t))) {
+				pr_err("%s:%d copy failed\n", __func__, __LINE__);
+				rc = -EFAULT;
+				break;
+			}
+		#endif
+			break;
+		}
 	case CFG_SLAVE_READ_I2C: {
 		struct msm_camera_i2c_read_config read_config;
 		uint16_t local_data = 0;
@@ -1796,6 +1865,8 @@ int32_t msm_sensor_platform_probe(struct platform_device *pdev, void *data)
 		(struct msm_sensor_ctrl_t *)data;
 	struct msm_camera_cci_client *cci_client = NULL;
 	uint32_t session_id;
+	unsigned long mount_pos;
+
 	s_ctrl->pdev = pdev;
 	s_ctrl->dev = &pdev->dev;
 	CDBG("%s called data %p\n", __func__, data);
@@ -1847,7 +1918,7 @@ int32_t msm_sensor_platform_probe(struct platform_device *pdev, void *data)
 		return rc;
 	}
 
-	CDBG("%s %s probe succeeded\n", __func__,
+	pr_err("%s %s probe succeeded\n", __func__,
 		s_ctrl->sensordata->sensor_name);
 	v4l2_subdev_init(&s_ctrl->msm_sd.sd,
 		s_ctrl->sensor_v4l2_subdev_ops);
@@ -1861,6 +1932,11 @@ int32_t msm_sensor_platform_probe(struct platform_device *pdev, void *data)
 	s_ctrl->msm_sd.sd.entity.group_id = MSM_CAMERA_SUBDEV_SENSOR;
 	s_ctrl->msm_sd.sd.entity.name =
 		s_ctrl->msm_sd.sd.name;
+	mount_pos = s_ctrl->sensordata->sensor_init_params->position;
+	mount_pos = mount_pos << 8;
+	mount_pos = mount_pos |
+	(s_ctrl->sensordata->sensor_init_params->sensor_mount_angle / 90);
+	s_ctrl->msm_sd.sd.entity.flags = mount_pos;
 
 	rc = camera_init_v4l2(&s_ctrl->pdev->dev, &session_id);
 	CDBG("%s rc %d session_id %d\n", __func__, rc, session_id);
@@ -1879,6 +1955,8 @@ int32_t msm_sensor_i2c_probe(struct i2c_client *client,
 {
 	int rc = 0;
 	uint32_t session_id;
+	unsigned long mount_pos;
+
 	CDBG("%s %s_i2c_probe called\n", __func__, client->name);
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		pr_err("%s %s i2c_check_functionality failed\n",
@@ -1974,6 +2052,12 @@ int32_t msm_sensor_i2c_probe(struct i2c_client *client,
 	s_ctrl->msm_sd.sd.entity.group_id = MSM_CAMERA_SUBDEV_SENSOR;
 	s_ctrl->msm_sd.sd.entity.name =
 		s_ctrl->msm_sd.sd.name;
+
+	mount_pos = s_ctrl->sensordata->sensor_init_params->position;
+	mount_pos = mount_pos << 8;
+	mount_pos = mount_pos |
+	(s_ctrl->sensordata->sensor_init_params->sensor_mount_angle / 90);
+	s_ctrl->msm_sd.sd.entity.flags = mount_pos;
 
 	rc = camera_init_v4l2(&s_ctrl->sensor_i2c_client->client->dev,
 		&session_id);

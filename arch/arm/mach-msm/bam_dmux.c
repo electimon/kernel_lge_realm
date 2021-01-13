@@ -16,6 +16,7 @@
  */
 
 #define DEBUG
+#define LGE_CR589665
 
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -58,16 +59,16 @@
 static int msm_bam_dmux_debug_enable;
 module_param_named(debug_enable, msm_bam_dmux_debug_enable,
 		   int, S_IRUGO | S_IWUSR | S_IWGRP);
-static int POLLING_MIN_SLEEP = 950;
+static int POLLING_MIN_SLEEP = 2950;
 module_param_named(min_sleep, POLLING_MIN_SLEEP,
 		   int, S_IRUGO | S_IWUSR | S_IWGRP);
-static int POLLING_MAX_SLEEP = 1050;
+static int POLLING_MAX_SLEEP = 3050;
 module_param_named(max_sleep, POLLING_MAX_SLEEP,
 		   int, S_IRUGO | S_IWUSR | S_IWGRP);
-static int POLLING_INACTIVITY = 40;
+static int POLLING_INACTIVITY = 1;
 module_param_named(inactivity, POLLING_INACTIVITY,
 		   int, S_IRUGO | S_IWUSR | S_IWGRP);
-static int bam_adaptive_timer_enabled = 1;
+static int bam_adaptive_timer_enabled;
 module_param_named(adaptive_timer_enabled,
 			bam_adaptive_timer_enabled,
 		   int, S_IRUGO | S_IWUSR | S_IWGRP);
@@ -195,6 +196,7 @@ static struct sps_register_event tx_register_event;
 static struct sps_register_event rx_register_event;
 static bool satellite_mode;
 static uint32_t num_buffers;
+static unsigned long long last_rx_pkt_timestamp;
 
 static struct bam_ch_info bam_ch[BAM_DMUX_NUM_CHANNELS];
 static int bam_mux_initialized;
@@ -222,9 +224,17 @@ static void notify_all(int event, unsigned long data);
 static void bam_mux_write_done(struct work_struct *work);
 static void handle_bam_mux_cmd(struct work_struct *work);
 static void rx_timer_work_func(struct work_struct *work);
+#ifdef LGE_CR589665
+static void queue_rx_work_func(struct work_struct *work);
+#endif
 
 static DECLARE_WORK(rx_timer_work, rx_timer_work_func);
+#ifdef LGE_CR589665
+static DECLARE_WORK(queue_rx_work, queue_rx_work_func);
+#endif
+#ifndef LGE_CR589665
 static struct delayed_work queue_rx_work;
+#endif
 
 static struct workqueue_struct *bam_mux_rx_workqueue;
 static struct workqueue_struct *bam_mux_tx_workqueue;
@@ -233,7 +243,7 @@ static struct workqueue_struct *bam_mux_tx_workqueue;
 #define UL_TIMEOUT_DELAY 1000	/* in ms */
 #define ENABLE_DISCONNECT_ACK	0x1
 #define SHUTDOWN_TIMEOUT_MS	500
-#define UL_WAKEUP_TIMEOUT_MS	2000
+#define UL_WAKEUP_TIMEOUT_MS	5000
 static void toggle_apps_ack(void);
 static void reconnect_to_bam(void);
 static void disconnect_to_bam(void);
@@ -389,7 +399,11 @@ static inline void verify_tx_queue_is_empty(const char *func)
 	spin_unlock_irqrestore(&bam_tx_pool_spinlock, flags);
 }
 
+#ifdef LGE_CR589665
+static void __queue_rx(gfp_t alloc_flags)
+#else
 static void queue_rx(void)
+#endif
 {
 	void *ptr;
 	struct rx_pkt_info *info;
@@ -403,24 +417,43 @@ static void queue_rx(void)
 	while (bam_connection_is_active && rx_len_cached < num_buffers) {
 		if (in_global_reset)
 			goto fail;
-
+#ifdef LGE_CR589665
+		info = kmalloc(sizeof(struct rx_pkt_info), alloc_flags);
+#else
 		info = kmalloc(sizeof(struct rx_pkt_info),
 						GFP_NOWAIT | __GFP_NOWARN);
+#endif
 		if (!info) {
 			DMUX_LOG_KERR(
+#ifdef LGE_CR589665
+			"%s: unable to alloc rx_pkt_info w/ flags %x, will retry later\n",
+								__func__,
+								alloc_flags);
+#else
 			"%s: unable to alloc rx_pkt_info, will retry later\n",
 								__func__);
+#endif
 			goto fail;
 		}
 
 		INIT_WORK(&info->work, handle_bam_mux_cmd);
 
+#ifdef LGE_CR589665
+		info->skb = __dev_alloc_skb(BUFFER_SIZE, alloc_flags);
+#else
 		info->skb = __dev_alloc_skb(BUFFER_SIZE,
 						GFP_NOWAIT | __GFP_NOWARN);
+#endif
 		if (info->skb == NULL) {
 			DMUX_LOG_KERR(
+#ifdef LGE_CR589665
+				"%s: unable to alloc skb w/ flags %x, will retry later\n",
+								__func__,
+								alloc_flags);
+#else
 				"%s: unable to alloc skb, will retry later\n",
 								__func__);
+#endif
 			goto fail_info;
 		}
 		ptr = skb_put(info->skb, BUFFER_SIZE);
@@ -462,15 +495,44 @@ fail_info:
 	kfree(info);
 
 fail:
+#ifdef LGE_CR589665
+	if (!in_global_reset) {
+#else
 	if (rx_len_cached == 0 && !in_global_reset) {
+#endif
 		DMUX_LOG_KERR("%s: rescheduling\n", __func__);
+#ifdef LGE_CR589665
+		schedule_work(&queue_rx_work);
+#else
 		schedule_delayed_work(&queue_rx_work, msecs_to_jiffies(100));
+#endif
 	}
 }
 
+#ifdef LGE_CR589665
+static void queue_rx(void)
+{
+	/*
+	 * Hot path.  Delays waiting for the allocation to find memory if its
+	 * not immediately available, and delays from logging allocation
+	 * failures which cannot be tolerated at this time.
+	 */
+	__queue_rx(GFP_NOWAIT | __GFP_NOWARN);
+}
+#endif
+
 static void queue_rx_work_func(struct work_struct *work)
 {
+#ifdef LGE_CR589665
+	/*
+	 * Cold path.  Delays can be tolerated.  Use of GFP_KERNEL should
+	 * guarentee the requested memory will be found, after some ammount of
+	 * delay.
+	 */
+	__queue_rx(GFP_KERNEL);
+#else
 	queue_rx();
+#endif
 }
 
 static void bam_mux_process_data(struct sk_buff *rx_skb)
@@ -1117,6 +1179,29 @@ fail:
 	queue_work_on(0, bam_mux_rx_workqueue, &rx_timer_work);
 }
 
+/**
+ * store_rx_timestamp() - store the current raw time as as a timestamp for when
+ *			the last rx packet was processed
+ */
+static void store_rx_timestamp(void)
+{
+	last_rx_pkt_timestamp = sched_clock();
+}
+
+/**
+ * log_rx_timestamp() - Log the stored rx pkt timestamp in a human readable
+ *			format
+ */
+static void log_rx_timestamp(void)
+{
+	unsigned long long t = last_rx_pkt_timestamp;
+	unsigned long nanosec_rem;
+
+	nanosec_rem = do_div(t, 1000000000U);
+	BAM_DMUX_LOG("Last rx pkt processed at [%6u.%09lu]\n", (unsigned)t,
+								nanosec_rem);
+}
+
 static void rx_timer_work_func(struct work_struct *work)
 {
 	struct sps_iovec iov;
@@ -1125,20 +1210,26 @@ static void rx_timer_work_func(struct work_struct *work)
 	int ret;
 	u32 buffs_unused, buffs_used;
 
+	BAM_DMUX_LOG("%s: polling start\n", __func__);
 	while (bam_connection_is_active) { /* timer loop */
 		++inactive_cycles;
 		while (bam_connection_is_active) { /* deplete queue loop */
-			if (in_global_reset)
+			if (in_global_reset) {
+				BAM_DMUX_LOG(
+						"%s: polling exit, global reset detected\n",
+						__func__);
 				return;
+			}
 
 			ret = sps_get_iovec(bam_rx_pipe, &iov);
 			if (ret) {
-				pr_err("%s: sps_get_iovec failed %d\n",
+				DMUX_LOG_KERR("%s: sps_get_iovec failed %d\n",
 						__func__, ret);
 				break;
 			}
 			if (iov.addr == 0)
 				break;
+			store_rx_timestamp();
 			inactive_cycles = 0;
 			mutex_lock(&bam_rx_pool_mutexlock);
 			if (unlikely(list_empty(&bam_rx_pool))) {
@@ -1171,6 +1262,7 @@ static void rx_timer_work_func(struct work_struct *work)
 		}
 
 		if (inactive_cycles >= POLLING_INACTIVITY) {
+			BAM_DMUX_LOG("%s: polling exit, no data\n", __func__);
 			rx_switch_to_interrupt_mode();
 			break;
 		}
@@ -1182,7 +1274,8 @@ static void rx_timer_work_func(struct work_struct *work)
 						&buffs_unused);
 
 			if (ret) {
-				pr_err("%s: error getting num buffers unused after sleep\n",
+				DMUX_LOG_KERR(
+					"%s: error getting num buffers unused after sleep\n",
 					__func__);
 
 				break;
@@ -1768,6 +1861,7 @@ static void disconnect_to_bam(void)
 		if (time_remaining == 0) {
 			DMUX_LOG_KERR("%s: shutdown completion timed out\n",
 					__func__);
+			log_rx_timestamp();
 			ssrestart_check();
 		}
 	}
@@ -2399,7 +2493,9 @@ static int bam_dmux_probe(struct platform_device *pdev)
 	init_completion(&shutdown_completion);
 	complete_all(&shutdown_completion);
 	INIT_DELAYED_WORK(&ul_timeout_work, ul_timeout);
+#ifndef LGE_CR589665
 	INIT_DELAYED_WORK(&queue_rx_work, queue_rx_work_func);
+#endif
 	wake_lock_init(&bam_wakelock, WAKE_LOCK_SUSPEND, "bam_dmux_wakelock");
 
 	rc = smsm_state_cb_register(SMSM_MODEM_STATE, SMSM_A2_POWER_CONTROL,

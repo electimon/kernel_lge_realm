@@ -45,6 +45,9 @@ enum {
 	POWER_SUPPLY_CHARGE_TYPE_NONE,
 	POWER_SUPPLY_CHARGE_TYPE_TRICKLE,
 	POWER_SUPPLY_CHARGE_TYPE_FAST,
+#ifdef CONFIG_LGE_WIRELESS_CHARGER_RT9536
+	POWER_SUPPLY_CHARGE_TYPE_WIRELESS,
+#endif
 };
 
 enum {
@@ -87,6 +90,9 @@ enum {
 enum power_supply_property {
 	/* Properties of type `int' */
 	POWER_SUPPLY_PROP_STATUS = 0,
+#ifdef CONFIG_LGE_PM
+	POWER_SUPPLY_PROP_STATUS_ORIGINAL,
+#endif
 	POWER_SUPPLY_PROP_CHARGE_TYPE,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_PRESENT,
@@ -101,8 +107,11 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_AVG,
 	POWER_SUPPLY_PROP_INPUT_VOLTAGE_REGULATION,
+	POWER_SUPPLY_PROP_VOLTAGE_OCV,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_MAX,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_TRIM,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_SETTLED,
 	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CURRENT_AVG,
 	POWER_SUPPLY_PROP_POWER_NOW,
@@ -124,8 +133,10 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_CAPACITY, /* in percents! */
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 	POWER_SUPPLY_PROP_TEMP,
+#ifndef CONFIG_LGE_PM
 	POWER_SUPPLY_PROP_COOL_TEMP,
 	POWER_SUPPLY_PROP_WARM_TEMP,
+#endif
 	POWER_SUPPLY_PROP_TEMP_AMBIENT,
 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW,
 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
@@ -133,8 +144,28 @@ enum power_supply_property {
 	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
 	POWER_SUPPLY_PROP_TYPE, /* use power_supply.type instead */
 	POWER_SUPPLY_PROP_SCOPE,
+#ifndef CONFIG_LGE_PM
 	POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL,
+#endif
 	POWER_SUPPLY_PROP_RESISTANCE,
+#ifdef CONFIG_LGE_PM_FACTORY_TESTMODE
+	POWER_SUPPLY_PROP_CHCOMP,
+	POWER_SUPPLY_PROP_CHARGE,
+	POWER_SUPPLY_PROP_HW_REV,
+	POWER_SUPPLY_PROP_USB_ID,
+#endif
+#ifdef CONFIG_LGE_PM_FACTORY_PSEUDO_BATTERY
+	POWER_SUPPLY_PROP_PSEUDO_BATT,
+#endif
+#ifdef CONFIG_LGE_PM_BATTERY_ID_CHECKER
+	POWER_SUPPLY_PROP_VALID_BATT,
+#endif
+#ifdef CONFIG_LGE_PM_VZW_FAST_CHG
+	POWER_SUPPLY_PROP_VZW_CHG_STATE,
+#endif
+#ifdef CONFIG_MAX17048_FUELGAUGE
+	POWER_SUPPLY_PROP_USE_FUELGAUGE,
+#endif
 	/* Properties of type `const char *' */
 	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_MANUFACTURER,
@@ -151,6 +182,12 @@ enum power_supply_type {
 	POWER_SUPPLY_TYPE_USB_CDP,	/* Charging Downstream Port */
 	POWER_SUPPLY_TYPE_USB_ACA,	/* Accessory Charger Adapters */
 	POWER_SUPPLY_TYPE_BMS,		/* Battery Monitor System */
+#ifdef CONFIG_MAX17048_FUELGAUGE
+	POWER_SUPPLY_TYPE_FUELGAUGE,
+#endif
+#ifdef CONFIG_LGE_WIRELESS_CHARGER_RT9536
+	POWER_SUPPLY_TYPE_WIRELESS,
+#endif
 };
 
 union power_supply_propval {
@@ -200,6 +237,9 @@ struct power_supply {
 	struct led_trigger *charging_blink_full_solid_trig;
 	char *charging_blink_full_solid_trig_name;
 #endif
+#ifdef CONFIG_MAX17048_FUELGAUGE
+	int use_external_fuelgauge;
+#endif
 };
 
 /*
@@ -228,6 +268,7 @@ extern int power_supply_am_i_supplied(struct power_supply *psy);
 extern int power_supply_set_battery_charged(struct power_supply *psy);
 extern int power_supply_set_current_limit(struct power_supply *psy, int limit);
 extern int power_supply_set_online(struct power_supply *psy, bool enable);
+extern int power_supply_set_health_state(struct power_supply *psy, int health);
 extern int power_supply_set_present(struct power_supply *psy, bool enable);
 extern int power_supply_set_scope(struct power_supply *psy, int scope);
 extern int power_supply_set_charge_type(struct power_supply *psy, int type);
@@ -251,6 +292,9 @@ static inline int power_supply_set_current_limit(struct power_supply *psy,
 							{ return -ENOSYS; }
 static inline int power_supply_set_online(struct power_supply *psy,
 							bool enable)
+							{ return -ENOSYS; }
+static inline int power_supply_set_health_state(struct power_supply *psy,
+							int health)
 							{ return -ENOSYS; }
 static inline int power_supply_set_present(struct power_supply *psy,
 							bool enable)
@@ -315,6 +359,7 @@ static inline bool power_supply_is_watt_property(enum power_supply_property psp)
 	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
+	case POWER_SUPPLY_PROP_VOLTAGE_OCV:
 	case POWER_SUPPLY_PROP_POWER_NOW:
 		return 1;
 	default:
